@@ -8,6 +8,10 @@
 
 根仓统一管理 compose、共享 proto 和各服务目录：`account-db`、`browser-reg`、`dashboard`、`gopay-payment`、`orchestrator`、`outlook-imap-service`。
 
+## 赞赏
+
+<img src="assets/zan.jpg" alt="赞赏码" width="240">
+
 ## 快速启动
 
 ```bash
