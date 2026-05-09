@@ -1,0 +1,63 @@
+package db
+
+import (
+	"log"
+	"os"
+	"strings"
+
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+)
+
+type Job struct {
+	ID           string `gorm:"primaryKey"`
+	AccountID    string `gorm:"index"`
+	Action       string `gorm:"index"`
+	Status       string `gorm:"index"`
+	Recoverable  bool
+	Retryable    bool
+	LastStep     string
+	ErrorMessage string
+	ResultJSON   string
+	CreatedAt    int64 `gorm:"autoCreateTime"`
+	UpdatedAt    int64 `gorm:"autoUpdateTime"`
+}
+
+type JobParam struct {
+	JobID     string `gorm:"primaryKey"`
+	Key       string `gorm:"primaryKey"`
+	Value     string
+	CreatedAt int64 `gorm:"autoCreateTime"`
+	UpdatedAt int64 `gorm:"autoUpdateTime"`
+}
+
+type JobStep struct {
+	JobID        string `gorm:"primaryKey"`
+	StepName     string `gorm:"primaryKey;column:step_name"`
+	Status       string `gorm:"index"`
+	Recoverable  bool
+	Retryable    bool
+	ErrorMessage string
+	ResultJSON   string
+	StartedAt    int64
+	CompletedAt  int64
+	CreatedAt    int64 `gorm:"autoCreateTime"`
+	UpdatedAt    int64 `gorm:"autoUpdateTime"`
+}
+
+func InitDB() *gorm.DB {
+	dsn := strings.TrimSpace(os.Getenv("ORCHESTRATOR_PG_DSN"))
+	if dsn == "" {
+		dsn = strings.TrimSpace(os.Getenv("PG_DSN"))
+	}
+	if dsn == "" {
+		log.Fatal("ORCHESTRATOR_PG_DSN or PG_DSN is required")
+	}
+
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		log.Fatalf("failed to connect to PostgreSQL database: %v", err)
+	}
+	db.AutoMigrate(&Job{}, &JobParam{}, &JobStep{})
+	return db
+}

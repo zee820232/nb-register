@@ -1,0 +1,13 @@
+tokens/
+.env
+.env.*
+*.token
+*.secret
+*.pem
+*.key
+*.log
+outlook-imap-service
+*.test
+*.out
+.git/
+.DS_Store

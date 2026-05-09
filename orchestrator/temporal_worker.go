@@ -1,0 +1,22 @@
+package main
+
+import (
+	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/worker"
+)
+
+func registerTemporalWorker(w worker.Worker, s *orchestratorServer) {
+	w.RegisterWorkflow(RegisterAccountWorkflow)
+	w.RegisterWorkflow(ActivateAccountWorkflow)
+	w.RegisterWorkflow(RegisterAndActivateWorkflow)
+
+	w.RegisterActivityWithOptions(s.CreateJobActivity, activity.RegisterOptions{Name: createJobActivityName})
+	w.RegisterActivityWithOptions(s.EnsureAccountActivity, activity.RegisterOptions{Name: ensureAccountActivityName})
+	w.RegisterActivityWithOptions(s.ResolveAccountFromJobActivity, activity.RegisterOptions{Name: resolveAccountActivityName})
+	w.RegisterActivityWithOptions(s.RegisterAccountAtomicActivity, activity.RegisterOptions{Name: registerAccountActivityName})
+	w.RegisterActivityWithOptions(s.GoPayPaymentAtomicActivity, activity.RegisterOptions{Name: goPayPaymentActivityName})
+	w.RegisterActivityWithOptions(s.PersistRegisteredActivity, activity.RegisterOptions{Name: persistRegisteredActivityName})
+	w.RegisterActivityWithOptions(s.PersistActivatedActivity, activity.RegisterOptions{Name: persistActivatedActivityName})
+	w.RegisterActivityWithOptions(s.MarkJobFailedActivity, activity.RegisterOptions{Name: markJobFailedActivityName})
+	w.RegisterActivityWithOptions(s.MarkJobSucceededActivity, activity.RegisterOptions{Name: markJobSucceededActivityName})
+}

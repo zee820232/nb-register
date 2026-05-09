@@ -4,7 +4,7 @@
 
 部分模块仅限授权研究、内部实验和非商用用途。支付和浏览器自动化相关实现参考并感谢 [DanOps-1/Gpt-Agreement-Payment](https://github.com/DanOps-1/Gpt-Agreement-Payment)。
 
-根仓只保存 compose、文档和共享 proto。`account-db`、`browser-reg`、`dashboard`、`gopay-payment`、`orchestrator`、`outlook-imap-service` 等服务目录由各自仓库独立管理。
+根仓统一管理 compose、共享 proto 和各服务目录：`account-db`、`browser-reg`、`dashboard`、`gopay-payment`、`orchestrator`、`outlook-imap-service`。
 
 ## 快速启动
 
@@ -166,12 +166,3 @@ docker compose --env-file compose.env down
 (cd dashboard/web && npm run build)
 docker compose --env-file compose.example.env config --quiet
 ```
-
-## 更多文档
-
-- [account-db](account-db/README.md)
-- [browser-reg](browser-reg/README.md)
-- [dashboard](dashboard/README.md)
-- [orchestrator](orchestrator/README.md)
-- [outlook-imap-service](outlook-imap-service/README.md)
-- [gopay-payment](gopay-payment/README.md)

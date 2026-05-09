@@ -1,0 +1,7 @@
+{
+  "scripts": {
+    "build": "npm --prefix web run build",
+    "dev": "npm --prefix web run dev",
+    "lint": "npm --prefix web run lint"
+  }
+}

@@ -49,15 +49,18 @@ frpc.toml
 *.local.toml
 test_*.go
 wa_otp.txt
-whatsapp-relay/data/
-whatsapp-relay/node_modules/
 gopay-payment/captures/
 gopay-payment/output/
 captures/
+node_modules/
 
 # Test
 *.test
 *.out
+*.tsbuildinfo
+dist/
+build/
+coverage/
 
 # Go workspace
 go.work
@@ -79,6 +82,12 @@ browser-reg/.venv/
 browser-reg/register_pb2.py
 browser-reg/register_pb2_grpc.py
 /tmp/screenshots/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
 
 # GoPay/DanOps runtime
 gopay-payment/.venv/
@@ -89,14 +98,3 @@ gopay-payment/**/*.pyc
 scratch/
 .playwright-cli/
 .env
-
-# Service repositories are managed independently. The root repository only
-# keeps compose/docs/shared proto files and must not commit nested repos.
-account-db/
-browser-reg/
-dashboard/
-email-service/
-gopay-payment/
-orchestrator/
-outlook-imap-service/
-whatsapp-relay/
