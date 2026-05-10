@@ -654,6 +654,7 @@ function OtpSubmitter({ job, onSubmit }: {
 }) {
   const [otp, setOtp] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const label = otpSubmitLabel(job);
 
   async function submit() {
     const value = otp.trim();
@@ -669,7 +670,7 @@ function OtpSubmitter({ job, onSubmit }: {
 
   return (
     <div className="otpSubmitter">
-      <span><KeyRound size={14} /> 注册 OTP</span>
+      <span><KeyRound size={14} /> {label}</span>
       <div>
         <input
           inputMode="numeric"
@@ -1120,7 +1121,14 @@ function canRetryJob(job: Job) {
 }
 
 function canSubmitOtp(job: Job) {
-  return job.status === 'RUNNING' && (job.action === 'REGISTER' || job.action === 'REGISTER_AND_ACTIVATE');
+  return job.status === 'RUNNING' && (job.action === 'REGISTER' || job.action === 'ACTIVATE' || job.action === 'REGISTER_AND_ACTIVATE');
+}
+
+function otpSubmitLabel(job: Job) {
+  if (job.action === 'ACTIVATE' || (job.action === 'REGISTER_AND_ACTIVATE' && job.last_step === 'gopay_payment')) {
+    return '支付 OTP';
+  }
+  return '注册 OTP';
 }
 
 function short(value: string, size = 8) {

@@ -22,6 +22,7 @@ DEFAULT_SCOPES = "offline_access https://graph.microsoft.com/Mail.Read"
 LOCK_FILE_NAME = ".nb_register.lock"
 PROXY_POOL_INDEX_FILE_NAME = ".proxy_pool_index"
 PROXY_POOL_LOCK_FILE_NAME = ".proxy_pool.lock"
+LAST_REGISTRATION_ERROR_FILE_NAME = "last_registration_error.txt"
 
 logger = logging.getLogger("outlook-imap-register")
 
@@ -297,6 +298,24 @@ def run_outlook_register(path: Path, proxy: str = "") -> int:
     if code != 0:
         logger.warning("Camoufox script exited with code %s; collecting any completed results", code)
     return code
+
+
+def last_registration_error(path: Path) -> str:
+    error_path = path / LAST_REGISTRATION_ERROR_FILE_NAME
+    if not error_path.exists():
+        return ""
+    try:
+        return error_path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        logger.warning("failed to read last registration error %s: %s", error_path, exc)
+        return ""
+
+
+def clear_last_registration_error(path: Path) -> None:
+    try:
+        (path / LAST_REGISTRATION_ERROR_FILE_NAME).unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("failed to clear last registration error: %s", exc)
 
 
 def browser_subprocess_env(proxy: str = "") -> dict[str, str]:
@@ -603,13 +622,17 @@ def run_registration_request_locked(enabled: bool, import_only: bool) -> dict:
 
     proxy = next_proxy()
     write_register_config(path, proxy=proxy)
+    clear_last_registration_error(out_dir)
     code = run_outlook_register(path, proxy=proxy)
     after_records = collect_records(out_dir, include_password_only=True)
     records = new_or_updated_records(before_records, after_records)
 
     error_message = ""
     if not records:
-        if code != 0:
+        last_error = last_registration_error(out_dir)
+        if last_error:
+            error_message = f"mailbox registration failed: {last_error}"
+        elif code != 0:
             error_message = f"mailbox registration failed with exit code {code}"
         else:
             error_message = "mailbox registration completed but returned no account records"

@@ -56,6 +56,8 @@ const (
 
 	registrationOTPParam            = "registration_otp"
 	registrationOTPSubmittedAtParam = "registration_otp_submitted_at_unix"
+	paymentOTPParam                 = "payment_otp"
+	paymentOTPSubmittedAtParam      = "payment_otp_submitted_at_unix"
 )
 
 type orchestratorServer struct {
@@ -74,6 +76,11 @@ type orchestratorServer struct {
 }
 
 type registrationOTPResult struct {
+	Code   string
+	Source string
+}
+
+type paymentOTPResult struct {
 	Code   string
 	Source string
 }
@@ -468,7 +475,7 @@ func (s *orchestratorServer) consumeManualRegistrationOtp(ctx context.Context, j
 	return code, true, nil
 }
 
-func (s *orchestratorServer) pay(ctx context.Context, account *pb.Account, sessionToken, accessToken string) (result *pb.GoPayResponse, data map[string]any, err error) {
+func (s *orchestratorServer) pay(ctx context.Context, jobID string, account *pb.Account, sessionToken, accessToken string) (result *pb.GoPayResponse, data map[string]any, err error) {
 	if sessionToken == "" {
 		sessionToken = account.GetSessionToken()
 	}
@@ -512,18 +519,20 @@ func (s *orchestratorServer) pay(ctx context.Context, account *pb.Account, sessi
 		}
 	}()
 
-	otp, err := s.waitForPaymentOtp(ctx, started.GetIssuedAfterUnix())
+	otp, err := s.waitForPaymentOtp(ctx, jobID, started.GetIssuedAfterUnix())
 	data["payment_otp"] = map[string]any{
 		"timeout_seconds":    s.paymentOtpTimeout(),
 		"issued_after_unix":  started.GetIssuedAfterUnix(),
 		"found":              err == nil,
+		"source":             otp.Source,
+		"manual_allowed":     true,
 		"otp_value_recorded": false,
 	}
 	if err != nil {
 		return nil, data, err
 	}
 
-	result, err = s.paymentClient.CompleteGoPay(ctx, &pb.CompleteGoPayRequest{FlowId: flowID, Otp: otp})
+	result, err = s.paymentClient.CompleteGoPay(ctx, &pb.CompleteGoPayRequest{FlowId: flowID, Otp: otp.Code})
 	data["payment_complete"] = paymentResultData(result)
 	data["payment_result_present"] = result != nil
 	if err != nil {
@@ -539,38 +548,107 @@ func (s *orchestratorServer) pay(ctx context.Context, account *pb.Account, sessi
 	return result, data, nil
 }
 
-func (s *orchestratorServer) waitForPaymentOtp(ctx context.Context, issuedAfterUnix int64) (string, error) {
+func (s *orchestratorServer) waitForPaymentOtp(ctx context.Context, jobID string, issuedAfterUnix int64) (paymentOTPResult, error) {
 	addr := s.otpAddr
 	if addr == "" {
 		addr = "gopay-payment:50051"
 	}
 	timeoutSeconds := s.paymentOtpTimeout()
+	defer func() {
+		_ = s.deleteJobParam(context.Background(), jobID, paymentOTPParam)
+		_ = s.deleteJobParam(context.Background(), jobID, paymentOTPSubmittedAtParam)
+	}()
 
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return "", err
+	type otpServiceResult struct {
+		code string
+		err  error
 	}
-	defer conn.Close()
 
-	reqCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds+10)*time.Second)
-	defer cancel()
+	otpCtx, cancelOTP := context.WithCancel(ctx)
+	defer cancelOTP()
 
-	resp, err := pb.NewOtpServiceClient(conn).WaitForOtp(reqCtx, &pb.WaitForOtpRequest{
-		Purpose:         "gopay",
-		TimeoutSeconds:  timeoutSeconds,
-		IssuedAfterUnix: issuedAfterUnix,
-	})
-	if err != nil {
-		return "", fmt.Errorf("otp not received after %ds: %w", timeoutSeconds, err)
+	otpCh := make(chan otpServiceResult, 1)
+	go func() {
+		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			otpCh <- otpServiceResult{err: err}
+			return
+		}
+		defer conn.Close()
+
+		reqCtx, cancel := context.WithTimeout(otpCtx, time.Duration(timeoutSeconds+10)*time.Second)
+		defer cancel()
+
+		resp, err := pb.NewOtpServiceClient(conn).WaitForOtp(reqCtx, &pb.WaitForOtpRequest{
+			Purpose:         "gopay",
+			TimeoutSeconds:  timeoutSeconds,
+			IssuedAfterUnix: issuedAfterUnix,
+		})
+		if err != nil {
+			otpCh <- otpServiceResult{err: fmt.Errorf("otp not received after %ds: %w", timeoutSeconds, err)}
+			return
+		}
+		if resp.GetFound() && strings.TrimSpace(resp.GetOtp()) != "" {
+			otpCh <- otpServiceResult{code: normalizeOTP(resp.GetOtp())}
+			return
+		}
+		lastErr := resp.GetErrorMessage()
+		if lastErr == "" {
+			lastErr = "otp not found"
+		}
+		otpCh <- otpServiceResult{err: fmt.Errorf("otp not received after %ds: %s", timeoutSeconds, lastErr)}
+	}()
+
+	deadline := time.NewTimer(time.Duration(timeoutSeconds) * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	var lastErr error
+	for {
+		select {
+		case otpResult := <-otpCh:
+			if strings.TrimSpace(otpResult.code) != "" {
+				return paymentOTPResult{Code: normalizeOTP(otpResult.code), Source: "webhook"}, nil
+			}
+			if otpResult.err != nil {
+				lastErr = otpResult.err
+			}
+			otpCh = nil
+		case <-ticker.C:
+			code, found, err := s.consumeManualPaymentOtp(ctx, jobID)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			if found {
+				return paymentOTPResult{Code: code, Source: "manual"}, nil
+			}
+		case <-deadline.C:
+			if lastErr != nil {
+				return paymentOTPResult{}, fmt.Errorf("payment otp not received after %ds: %w", timeoutSeconds, lastErr)
+			}
+			return paymentOTPResult{}, fmt.Errorf("payment otp not received after %ds", timeoutSeconds)
+		case <-ctx.Done():
+			return paymentOTPResult{}, ctx.Err()
+		}
 	}
-	if resp.GetFound() && resp.GetOtp() != "" {
-		return resp.GetOtp(), nil
+}
+
+func (s *orchestratorServer) consumeManualPaymentOtp(ctx context.Context, jobID string) (string, bool, error) {
+	value, found, err := s.getJobParam(ctx, jobID, paymentOTPParam)
+	if err != nil || !found {
+		return "", false, err
 	}
-	lastErr := resp.GetErrorMessage()
-	if lastErr == "" {
-		lastErr = "otp not found"
+	code := normalizeOTP(value)
+	if code == "" {
+		return "", false, s.deleteJobParam(ctx, jobID, paymentOTPParam)
 	}
-	return "", fmt.Errorf("otp not received after %ds: %s", timeoutSeconds, lastErr)
+	if err := s.deleteJobParam(ctx, jobID, paymentOTPParam); err != nil {
+		return "", false, err
+	}
+	_ = s.deleteJobParam(ctx, jobID, paymentOTPSubmittedAtParam)
+	return code, true, nil
 }
 
 func (s *orchestratorServer) RegisterAccount(ctx context.Context, req *pb.RegisterAccountRequest) (*pb.RegisterAccountResponse, error) {
@@ -737,56 +815,94 @@ func (s *orchestratorServer) SubmitRegistrationOtp(ctx context.Context, req *pb.
 		return &pb.SubmitRegistrationOtpResponse{Success: false, ErrorMessage: "otp is required"}, nil
 	}
 
-	jobID, err := s.resolveRegistrationOTPJobID(ctx, strings.TrimSpace(req.GetJobId()), strings.TrimSpace(req.GetAccountId()))
+	jobID, otpParam, submittedAtParam, otpKind, err := s.resolveManualOTPJob(ctx, strings.TrimSpace(req.GetJobId()), strings.TrimSpace(req.GetAccountId()))
 	if err != nil {
 		return &pb.SubmitRegistrationOtpResponse{Success: false, ErrorMessage: err.Error()}, nil
 	}
 
 	if err := s.setJobParams(ctx, jobID, map[string]string{
-		registrationOTPParam:            otp,
-		registrationOTPSubmittedAtParam: strconv.FormatInt(time.Now().Unix(), 10),
+		otpParam:         otp,
+		submittedAtParam: strconv.FormatInt(time.Now().Unix(), 10),
 	}); err != nil {
 		return &pb.SubmitRegistrationOtpResponse{Success: false, JobId: jobID, ErrorMessage: err.Error()}, nil
 	}
 
-	log.Printf("[orchestrator] registration otp submitted job=%s source=manual", jobID)
+	log.Printf("[orchestrator] %s otp submitted job=%s source=manual", otpKind, jobID)
 	return &pb.SubmitRegistrationOtpResponse{Success: true, JobId: jobID}, nil
 }
 
-func (s *orchestratorServer) resolveRegistrationOTPJobID(ctx context.Context, jobID, accountID string) (string, error) {
+func (s *orchestratorServer) resolveManualOTPJob(ctx context.Context, jobID, accountID string) (string, string, string, string, error) {
 	if jobID != "" {
 		var job db.Job
 		err := s.db.WithContext(ctx).First(&job, "id = ?", jobID).Error
 		if err != nil {
 			if err == gorm.ErrRecordNotFound {
-				return "", fmt.Errorf("job not found: %s", jobID)
+				return "", "", "", "", fmt.Errorf("job not found: %s", jobID)
 			}
-			return "", err
+			return "", "", "", "", err
 		}
 		if job.Status != statusRunning {
-			return "", fmt.Errorf("job is not running: %s", job.Status)
+			return "", "", "", "", fmt.Errorf("job is not running: %s", job.Status)
 		}
-		if job.Action != actionRegister && job.Action != actionRegisterAndActivate {
-			return "", fmt.Errorf("job does not accept registration otp: %s", job.Action)
+		otpParam, submittedAtParam, otpKind, err := s.manualOTPParamsForJob(ctx, &job)
+		if err != nil {
+			return "", "", "", "", err
 		}
-		return jobID, nil
+		return jobID, otpParam, submittedAtParam, otpKind, nil
 	}
 	if accountID == "" {
-		return "", fmt.Errorf("job_id or account_id is required")
+		return "", "", "", "", fmt.Errorf("job_id or account_id is required")
 	}
 
 	var job db.Job
 	err := s.db.WithContext(ctx).
-		Where("account_id = ? AND action IN ? AND status = ?", accountID, []string{actionRegister, actionRegisterAndActivate}, statusRunning).
+		Where("account_id = ? AND action IN ? AND status = ?", accountID, []string{actionRegister, actionActivate, actionRegisterAndActivate}, statusRunning).
 		Order("updated_at DESC").
 		First(&job).Error
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return "", fmt.Errorf("running registration job not found for account %s", accountID)
+			return "", "", "", "", fmt.Errorf("running otp-accepting job not found for account %s", accountID)
 		}
-		return "", err
+		return "", "", "", "", err
 	}
-	return job.ID, nil
+	otpParam, submittedAtParam, otpKind, err := s.manualOTPParamsForJob(ctx, &job)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	return job.ID, otpParam, submittedAtParam, otpKind, nil
+}
+
+func (s *orchestratorServer) manualOTPParamsForJob(ctx context.Context, job *db.Job) (string, string, string, error) {
+	if job != nil && job.Action == actionRegisterAndActivate && job.LastStep == stepRegisterAccount && job.ID != "" && s != nil && s.db != nil {
+		var step db.JobStep
+		err := s.db.WithContext(ctx).First(&step, "job_id = ? AND step_name = ?", job.ID, stepRegisterAccount).Error
+		if err == nil && step.Status == statusSucceeded {
+			return paymentOTPParam, paymentOTPSubmittedAtParam, "payment", nil
+		}
+		if err != nil && err != gorm.ErrRecordNotFound {
+			return "", "", "", err
+		}
+	}
+	return manualOTPParamsForJobSnapshot(job)
+}
+
+func manualOTPParamsForJobSnapshot(job *db.Job) (string, string, string, error) {
+	if job == nil {
+		return "", "", "", fmt.Errorf("job is required")
+	}
+	switch job.Action {
+	case actionRegister:
+		return registrationOTPParam, registrationOTPSubmittedAtParam, "registration", nil
+	case actionActivate:
+		return paymentOTPParam, paymentOTPSubmittedAtParam, "payment", nil
+	case actionRegisterAndActivate:
+		if job.LastStep == stepGoPayPayment {
+			return paymentOTPParam, paymentOTPSubmittedAtParam, "payment", nil
+		}
+		return registrationOTPParam, registrationOTPSubmittedAtParam, "registration", nil
+	default:
+		return "", "", "", fmt.Errorf("job does not accept otp: %s", job.Action)
+	}
 }
 
 func (s *orchestratorServer) GetJob(ctx context.Context, req *pb.GetJobRequest) (*pb.GetJobResponse, error) {

@@ -778,6 +778,22 @@ def main():
     result = outlook_register(proxy=args.proxy, email_suffix=args.suffix,
                               max_captcha_retries=args.max_retries)
 
+    if args.results_dir:
+        os.makedirs(args.results_dir, exist_ok=True)
+        error_file = os.path.join(args.results_dir, "last_registration_error.txt")
+        if result["success"]:
+            try:
+                if os.path.exists(error_file):
+                    os.remove(error_file)
+            except Exception:
+                pass
+        else:
+            try:
+                with open(error_file, "w", encoding="utf-8") as f:
+                    f.write(str(result.get("error") or "registration failed").strip() + "\n")
+            except Exception as e:
+                logger.error(f"[outlook] Failed to save registration error: {e}")
+
     print("\n" + "=" * 50)
     if result["success"]:
         print(f"✅ Registration successful!")
@@ -796,7 +812,8 @@ def main():
         print(f"❌ Registration failed: {result['error']}")
         print(f"   Email:    {result['email']}")
     print("=" * 50)
+    return 0 if result["success"] else 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
