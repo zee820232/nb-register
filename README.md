@@ -122,6 +122,15 @@ GoPay payment 内置 OTP webhook。手机端通知转发工具把收到的 GoPay
 http://<本机局域网 IP>:8081/webhook/otp
 ```
 
+仓库内置了一个专用 Android 转发器：
+
+```bash
+cd whatsapp-forwarder
+./gradlew assembleDebug
+```
+
+安装 `whatsapp-forwarder/app/build/outputs/apk/debug/app-debug.apk` 后，在应用里填写上面的 webhook URL，并在系统设置中启用 `WhatsApp Forwarder` 通知访问。
+
 本机测试：
 
 ```bash
