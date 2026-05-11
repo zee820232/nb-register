@@ -367,24 +367,26 @@ table {
 .accountsPanel table { min-width: 920px; }
 .mailboxesPanel table { min-width: 920px; }
 .mailboxTable {
-  min-width: 1040px;
+  min-width: 1180px;
   table-layout: fixed;
 }
 
 .mailboxTable th:nth-child(1),
-.mailboxTable td:nth-child(1) { width: 270px; }
+.mailboxTable td:nth-child(1) { width: 240px; }
 .mailboxTable th:nth-child(2),
-.mailboxTable td:nth-child(2) { width: 76px; }
+.mailboxTable td:nth-child(2) { width: 170px; }
 .mailboxTable th:nth-child(3),
-.mailboxTable td:nth-child(3) { width: 132px; }
+.mailboxTable td:nth-child(3) { width: 76px; }
 .mailboxTable th:nth-child(4),
-.mailboxTable td:nth-child(4) { width: 86px; }
+.mailboxTable td:nth-child(4) { width: 132px; }
 .mailboxTable th:nth-child(5),
-.mailboxTable td:nth-child(5) { width: 168px; }
+.mailboxTable td:nth-child(5) { width: 86px; }
 .mailboxTable th:nth-child(6),
-.mailboxTable td:nth-child(6) { width: 128px; }
+.mailboxTable td:nth-child(6) { width: 168px; }
 .mailboxTable th:nth-child(7),
-.mailboxTable td:nth-child(7) { width: 104px; }
+.mailboxTable td:nth-child(7) { width: 128px; }
+.mailboxTable th:nth-child(8),
+.mailboxTable td:nth-child(8) { width: 104px; }
 
 .mailboxErrorCell span {
   display: block;
@@ -511,8 +513,17 @@ tbody tr:hover, tr.selected { background: #eef6f1; }
 }
 
 .cellStack {
+  min-width: 0;
   display: grid;
   gap: 3px;
+}
+
+.cellStack span,
+.cellStack small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cellStack small,
@@ -521,8 +532,27 @@ tbody tr:hover, tr.selected { background: #eef6f1; }
 }
 
 .latestOtp {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: #176143;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.mailActivity {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.mailActivity small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #7b857e;
 }
 
 .rowActions {
@@ -636,6 +666,57 @@ tbody tr:hover, tr.selected { background: #eef6f1; }
   gap: 18px;
 }
 
+.mailboxDetailView {
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  overflow: hidden;
+}
+
+.mailboxDetailTabs {
+  min-width: 0;
+  padding: 3px;
+  border: 1px solid #dce3dc;
+  border-radius: 8px;
+  background: #f4f6f3;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
+}
+
+.mailboxDetailTabs button {
+  min-width: 0;
+  min-height: 32px;
+  justify-content: center;
+  border-color: transparent;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mailboxDetailTabs button.active {
+  border-color: #c8d7ce;
+  background: #fbfcfb;
+  color: #174f3b;
+}
+
+.mailboxDetailTabs span {
+  min-width: 20px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: #e3e9e4;
+  color: #647069;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.mailboxTabPanel {
+  min-height: 0;
+  overflow: auto;
+}
+
 .mailboxSummary {
   margin-bottom: 16px;
   padding: 12px;
@@ -722,12 +803,12 @@ tbody tr:hover, tr.selected { background: #eef6f1; }
   border-radius: 8px;
   background: #fff;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 32px;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, .72fr) 32px;
   align-items: center;
   gap: 10px;
 }
 
-.aliasItem > div {
+.aliasIdentity {
   min-width: 0;
   display: grid;
   gap: 5px;
@@ -1002,5 +1083,11 @@ pre {
   .createAccount,
   .mailboxForm,
   .createAccount .formGrid { grid-template-columns: 1fr; }
+  .aliasItem {
+    grid-template-columns: minmax(0, 1fr) 32px;
+  }
+  .aliasItem .mailActivity {
+    grid-column: 1 / -1;
+  }
   th, td { padding: 9px; }
 }

@@ -124,6 +124,7 @@ type Step = {
 
 type Toast = { kind: 'ok' | 'error'; text: string } | null;
 type ViewKey = 'accounts' | 'mailboxes' | 'mailboxRegistration' | 'jobs';
+type MailboxDetailTab = 'overview' | 'aliases' | 'inbox';
 
 const statusOptions = ['', 'CREATED', 'REGISTERED', 'ACTIVATED', 'DEACTIVATED', 'EMAIL_ALREADY_EXISTS', 'REGISTER_FAILED', 'PAYMENT_FAILED'];
 const jobStatusOptions = ['', 'RUNNING', 'SUCCEEDED', 'FAILED_RETRYABLE', 'FAILED_RECOVERABLE', 'FAILED_FINAL'];
@@ -520,7 +521,7 @@ function App() {
                       <KeyRound size={16} /> 补 OAuth {missingOAuthCount > 0 ? `(${missingOAuthCount})` : ''}
                     </button>
                     <button className="secondaryButton" onClick={() => fetchMailboxInbox()} disabled={busy || inboxLoading || oauthMailboxCount === 0}>
-                      <Inbox size={16} /> {inboxLoading ? '拉取中' : `收信箱${oauthMailboxCount > 0 ? ` (${oauthMailboxCount})` : ''}`}
+                      <Inbox size={16} /> {inboxLoading ? '拉取中' : `收件箱${oauthMailboxCount > 0 ? ` (${oauthMailboxCount})` : ''}`}
                     </button>
                     <button className="secondaryButton" onClick={() => setShowSecrets((v) => !v)}>
                       {showSecrets ? <EyeOff size={16} /> : <Eye size={16} />}
@@ -1017,7 +1018,7 @@ function MailboxPanel({ mailboxes, selected, busy, showSecrets, oauthing, onSele
       <div className="tableWrap">
         <table className="mailboxTable">
           <thead>
-            <tr><th>主邮箱</th><th>占用</th><th>OAuth</th><th>Token</th><th>更新</th><th>错误</th><th>操作</th></tr>
+            <tr><th>主邮箱</th><th>最近邮件</th><th>占用</th><th>OAuth</th><th>Token</th><th>更新</th><th>错误</th><th>操作</th></tr>
           </thead>
           <tbody>
             {mailboxes.map((mailbox) => {
@@ -1029,9 +1030,9 @@ function MailboxPanel({ mailboxes, selected, busy, showSecrets, oauthing, onSele
                     <div className="cellStack">
                       <span>{showSecrets ? mailbox.email_address : maskEmail(mailbox.email_address)}</span>
                       <small>{mailbox.primary_email || '-'}</small>
-                      <LatestOtpLine mailbox={mailbox} showSecrets={showSecrets} />
                     </div>
                   </td>
+                  <td><MailboxActivityCell mailbox={mailbox} showSecrets={showSecrets} /></td>
                   <td><StatusBadge status={mailbox.status} /></td>
                   <td><StatusBadge status={authStatus(mailbox)} /></td>
                   <td><TokenBadge mailbox={mailbox} /></td>
@@ -1099,8 +1100,8 @@ function MailboxInboxSection({ mailbox, result, bans, showSecrets, loading, onFe
             <p>{showSecrets ? (message.body_preview || '-') : maskPreview(message.body_preview || '-')}</p>
           </article>
         ))}
-        {!result && <div className="inboxEmpty">点击“拉取当前邮箱”后显示这个邮箱的收件箱。</div>}
-        {result && !result.error_message && messages.length === 0 && <div className="inboxEmpty">当前邮箱没有新的收件箱邮件。</div>}
+        {!result && <div className="inboxEmpty">点击“拉取当前邮箱”后显示当前邮箱的邮件。</div>}
+        {result && !result.error_message && messages.length === 0 && <div className="inboxEmpty">当前邮箱没有新邮件。</div>}
       </div>
     </section>
   );
@@ -1112,10 +1113,25 @@ function LatestOtpLine({ mailbox, showSecrets }: {
 }) {
   if (!mailbox.latest_otp) return null;
   const value = showSecrets ? mailbox.latest_otp : mask(mailbox.latest_otp);
+  const title = showSecrets ? (mailbox.latest_otp_subject || 'Latest OTP') : maskPreview(mailbox.latest_otp_subject || 'Latest OTP');
   return (
-    <small className="latestOtp" title={mailbox.latest_otp_subject || 'Latest OTP'}>
+    <small className="latestOtp" title={title}>
       OTP {value} · {formatUnix(mailbox.latest_otp_received_at_unix)}
     </small>
+  );
+}
+
+function MailboxActivityCell({ mailbox, showSecrets }: {
+  mailbox: Mailbox;
+  showSecrets: boolean;
+}) {
+  if (!mailbox.latest_otp) return <span className="muted">-</span>;
+  const subject = showSecrets ? (mailbox.latest_otp_subject || '-') : maskPreview(mailbox.latest_otp_subject || '-');
+  return (
+    <div className="mailActivity">
+      <LatestOtpLine mailbox={mailbox} showSecrets={showSecrets} />
+      <small title={subject}>{subject}</small>
+    </div>
   );
 }
 
@@ -1217,11 +1233,11 @@ function MailboxAliasesSection({ aliases, showSecrets, onDelete }: {
       <div className="aliasList">
         {aliases.map((alias) => (
           <div className="aliasItem" key={alias.email_address}>
-            <div>
+            <div className="aliasIdentity">
               <strong>{showSecrets ? alias.email_address : maskEmail(alias.email_address)}</strong>
               <span><StatusBadge status={alias.status} /> <StatusBadge status={authStatus(alias)} /></span>
-              <LatestOtpLine mailbox={alias} showSecrets={showSecrets} />
             </div>
+            <MailboxActivityCell mailbox={alias} showSecrets={showSecrets} />
             <button className="iconButton dangerButton" {...buttonHint('删除 Alias')} onClick={() => onDelete(alias)}>
               <Trash2 size={14} />
             </button>
@@ -1243,54 +1259,79 @@ function MailboxDetails({ mailbox, showSecrets, inboxResult, bans, aliases, inbo
   onFetchInbox: (emailAddress?: string) => Promise<void>;
   onDelete: (mailbox: Mailbox) => Promise<void>;
 }) {
+  const [activeTab, setActiveTab] = useState<MailboxDetailTab>('overview');
+  const inboxMessageCount = inboxResult?.messages?.length || 0;
+
+  useEffect(() => {
+    setActiveTab('overview');
+  }, [mailbox.email_address]);
+
   return (
-    <div className="details">
-      <section>
-        <div className="mailboxSummary">
-          <div className="mailboxSummaryHead">
-            <div>
-              <span>{mailbox.is_primary ? '主邮箱' : 'Alias'}</span>
-              <strong>{showSecrets ? mailbox.email_address : maskEmail(mailbox.email_address)}</strong>
+    <div className="details mailboxDetailView">
+      <nav className="mailboxDetailTabs" aria-label="邮箱详情">
+        <button className={activeTab === 'overview' ? 'active' : ''} onClick={() => setActiveTab('overview')}>概览</button>
+        <button className={activeTab === 'aliases' ? 'active' : ''} onClick={() => setActiveTab('aliases')}>Alias <span>{aliases.length}</span></button>
+        <button className={activeTab === 'inbox' ? 'active' : ''} onClick={() => setActiveTab('inbox')}>收件箱 <span>{inboxMessageCount}</span></button>
+      </nav>
+
+      {activeTab === 'overview' && (
+        <section className="mailboxTabPanel">
+          <div className="mailboxSummary">
+            <div className="mailboxSummaryHead">
+              <div>
+                <span>{mailbox.is_primary ? '主邮箱' : 'Alias'}</span>
+                <strong>{showSecrets ? mailbox.email_address : maskEmail(mailbox.email_address)}</strong>
+              </div>
+              <div className="summaryBadges">
+                <StatusBadge status={mailbox.status} />
+                <StatusBadge status={authStatus(mailbox)} />
+              </div>
             </div>
-            <div className="summaryBadges">
-              <StatusBadge status={mailbox.status} />
-              <StatusBadge status={authStatus(mailbox)} />
+            <div className="latestOtpPanel">
+              <span>Latest OTP</span>
+              <strong className="mono">{showSecrets ? (mailbox.latest_otp || '-') : mask(mailbox.latest_otp)}</strong>
+              <em>{formatUnix(mailbox.latest_otp_received_at_unix)}</em>
             </div>
           </div>
-          <div className="latestOtpPanel">
-            <span>Latest OTP</span>
-            <strong className="mono">{showSecrets ? (mailbox.latest_otp || '-') : mask(mailbox.latest_otp)}</strong>
-            <em>{formatUnix(mailbox.latest_otp_received_at_unix)}</em>
+          <h3>邮箱</h3>
+          <KV label="Email" value={showSecrets ? mailbox.email_address : maskEmail(mailbox.email_address)} />
+          <KV label="Password" value={showSecrets ? mailbox.password : mask(mailbox.password)} mono />
+          <KV label="Status" value={statusText(mailbox.status)} />
+          <KV label="OAuth" value={statusText(authStatus(mailbox))} />
+          <KV label="Primary" value={mailbox.primary_email || '-'} />
+          <KV label="Refresh" value={showSecrets ? mailbox.refresh_token : mask(mailbox.refresh_token)} mono />
+          <KV label="Access" value={showSecrets ? mailbox.access_token : mask(mailbox.access_token)} mono />
+          <KV label="Latest OTP" value={showSecrets ? mailbox.latest_otp : mask(mailbox.latest_otp)} mono />
+          <KV label="OTP Time" value={formatUnix(mailbox.latest_otp_received_at_unix)} />
+          <KV label="Created" value={formatUnix(mailbox.created_at)} />
+          <KV label="Updated" value={formatUnix(mailbox.updated_at)} />
+          <KV label="Error" value={mailbox.last_error || '-'} />
+          <div className="buttonRow detailActions">
+            <button className="dangerButton" onClick={() => onDelete(mailbox)}>
+              <Trash2 size={14} /> 删除主邮箱
+            </button>
           </div>
+        </section>
+      )}
+
+      {activeTab === 'aliases' && (
+        <div className="mailboxTabPanel">
+          <MailboxAliasesSection aliases={aliases} showSecrets={showSecrets} onDelete={onDelete} />
         </div>
-        <h3>邮箱</h3>
-        <KV label="Email" value={showSecrets ? mailbox.email_address : maskEmail(mailbox.email_address)} />
-        <KV label="Password" value={showSecrets ? mailbox.password : mask(mailbox.password)} mono />
-        <KV label="Status" value={statusText(mailbox.status)} />
-        <KV label="OAuth" value={statusText(authStatus(mailbox))} />
-        <KV label="Primary" value={mailbox.primary_email || '-'} />
-        <KV label="Refresh" value={showSecrets ? mailbox.refresh_token : mask(mailbox.refresh_token)} mono />
-        <KV label="Access" value={showSecrets ? mailbox.access_token : mask(mailbox.access_token)} mono />
-        <KV label="Latest OTP" value={showSecrets ? mailbox.latest_otp : mask(mailbox.latest_otp)} mono />
-        <KV label="OTP Time" value={formatUnix(mailbox.latest_otp_received_at_unix)} />
-        <KV label="Created" value={formatUnix(mailbox.created_at)} />
-        <KV label="Updated" value={formatUnix(mailbox.updated_at)} />
-        <KV label="Error" value={mailbox.last_error || '-'} />
-        <div className="buttonRow detailActions">
-          <button className="dangerButton" onClick={() => onDelete(mailbox)}>
-            <Trash2 size={14} /> 删除主邮箱
-          </button>
+      )}
+
+      {activeTab === 'inbox' && (
+        <div className="mailboxTabPanel">
+          <MailboxInboxSection
+            mailbox={mailbox}
+            result={inboxResult}
+            bans={bans}
+            showSecrets={showSecrets}
+            loading={inboxLoading}
+            onFetch={onFetchInbox}
+          />
         </div>
-      </section>
-      <MailboxAliasesSection aliases={aliases} showSecrets={showSecrets} onDelete={onDelete} />
-      <MailboxInboxSection
-        mailbox={mailbox}
-        result={inboxResult}
-        bans={bans}
-        showSecrets={showSecrets}
-        loading={inboxLoading}
-        onFetch={onFetchInbox}
-      />
+      )}
     </div>
   );
 }
