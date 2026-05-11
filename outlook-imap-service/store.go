@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -39,6 +40,17 @@ type latestOTPRow struct {
 	OTP            string
 	Subject        string
 	ReceivedAtUnix int64
+}
+
+type inboxMessageRow struct {
+	ID             string
+	MailboxEmail   string
+	Subject        string
+	FromAddress    string
+	BodyPreview    string
+	ReceivedAtUnix int64
+	RecipientsJSON string
+	OTP            string
 }
 
 type rowScanner interface {
@@ -110,6 +122,20 @@ func (s *MailboxStore) ensureSchema(ctx context.Context) error {
 			seen_at BIGINT NOT NULL,
 			PRIMARY KEY (mailbox_email, message_key)
 		)`,
+		`CREATE TABLE IF NOT EXISTS mailbox_inbox_messages (
+			mailbox_email TEXT NOT NULL,
+			message_key TEXT NOT NULL,
+			message_id TEXT NOT NULL DEFAULT '',
+			subject TEXT NOT NULL DEFAULT '',
+			from_address TEXT NOT NULL DEFAULT '',
+			body_preview TEXT NOT NULL DEFAULT '',
+			received_at BIGINT NOT NULL DEFAULT 0,
+			recipients_json TEXT NOT NULL DEFAULT '[]',
+			otp TEXT NOT NULL DEFAULT '',
+			created_at BIGINT NOT NULL,
+			updated_at BIGINT NOT NULL,
+			PRIMARY KEY (mailbox_email, message_key)
+		)`,
 		`CREATE TABLE IF NOT EXISTS mailbox_latest_otps (
 			email TEXT PRIMARY KEY,
 			otp TEXT NOT NULL,
@@ -124,6 +150,7 @@ func (s *MailboxStore) ensureSchema(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_mailboxes_auth_status ON mailboxes(auth_status)`,
 		`CREATE INDEX IF NOT EXISTS idx_mailboxes_primary ON mailboxes(primary_email)`,
 		`CREATE INDEX IF NOT EXISTS idx_mailbox_inbox_seen_at ON mailbox_inbox_seen(seen_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_mailbox_inbox_messages_received_at ON mailbox_inbox_messages(mailbox_email, received_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_mailbox_latest_otps_received_at ON mailbox_latest_otps(received_at)`,
 		`UPDATE mailboxes
 				SET auth_status = CASE
@@ -309,6 +336,20 @@ func (s *MailboxStore) InboxWatermark(ctx context.Context, email string) (int64,
 	return watermark, err
 }
 
+func (s *MailboxStore) HasInboxMessages(ctx context.Context, email string) (bool, error) {
+	email = normalizeEmail(email)
+	if email == "" {
+		return false, errors.New("email_address is required")
+	}
+	var exists bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM mailbox_inbox_messages WHERE mailbox_email = $1
+		)
+	`, email).Scan(&exists)
+	return exists, err
+}
+
 func (s *MailboxStore) RecordInboxMessages(ctx context.Context, email string, messages []graphMessage) ([]graphMessage, error) {
 	email = normalizeEmail(email)
 	if email == "" {
@@ -332,11 +373,36 @@ func (s *MailboxStore) RecordInboxMessages(ctx context.Context, email string, me
 		if receivedAtNs > maxReceivedAtNs {
 			maxReceivedAtNs = receivedAtNs
 		}
+		inboxMsg := inboxMessage(email, msg)
+		recipientsJSON, err := json.Marshal(inboxMsg.GetRecipients())
+		if err != nil {
+			return nil, err
+		}
+		key := messageKey(msg)
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO mailbox_inbox_messages (
+				mailbox_email, message_key, message_id, subject, from_address, body_preview,
+				received_at, recipients_json, otp, created_at, updated_at
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
+			ON CONFLICT (mailbox_email, message_key) DO UPDATE SET
+				message_id = EXCLUDED.message_id,
+				subject = EXCLUDED.subject,
+				from_address = EXCLUDED.from_address,
+				body_preview = EXCLUDED.body_preview,
+				received_at = EXCLUDED.received_at,
+				recipients_json = EXCLUDED.recipients_json,
+				otp = EXCLUDED.otp,
+				updated_at = EXCLUDED.updated_at
+		`, email, key, inboxMsg.GetId(), inboxMsg.GetSubject(), inboxMsg.GetFromAddress(),
+			inboxMsg.GetBodyPreview(), inboxMsg.GetReceivedAtUnix(), string(recipientsJSON), inboxMsg.GetOtp(), now); err != nil {
+			return nil, err
+		}
 		tag, err := tx.Exec(ctx, `
 			INSERT INTO mailbox_inbox_seen (mailbox_email, message_key, seen_at)
 			VALUES ($1, $2, $3)
 			ON CONFLICT (mailbox_email, message_key) DO NOTHING
-		`, email, messageKey(msg), now)
+		`, email, key, now)
 		if err != nil {
 			return nil, err
 		}
@@ -358,6 +424,58 @@ func (s *MailboxStore) RecordInboxMessages(ctx context.Context, email string, me
 		return nil, err
 	}
 	return unseen, nil
+}
+
+func (s *MailboxStore) ListInboxMessages(ctx context.Context, email string, limit int32) ([]*pb.EmailInboxMessage, error) {
+	email = normalizeEmail(email)
+	if email == "" {
+		return nil, errors.New("email_address is required")
+	}
+	n := messageLimitValue(limit, defaultMessageLimit)
+	rows, err := s.pool.Query(ctx, `
+		SELECT message_id, mailbox_email, subject, from_address, body_preview,
+			received_at, recipients_json, otp
+		FROM mailbox_inbox_messages
+		WHERE mailbox_email = $1
+		ORDER BY received_at DESC, updated_at DESC, message_key DESC
+		LIMIT $2
+	`, email, n)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []*pb.EmailInboxMessage{}
+	for rows.Next() {
+		var row inboxMessageRow
+		if err := rows.Scan(
+			&row.ID,
+			&row.MailboxEmail,
+			&row.Subject,
+			&row.FromAddress,
+			&row.BodyPreview,
+			&row.ReceivedAtUnix,
+			&row.RecipientsJSON,
+			&row.OTP,
+		); err != nil {
+			return nil, err
+		}
+		recipients := []string{}
+		if err := json.Unmarshal([]byte(row.RecipientsJSON), &recipients); err != nil {
+			recipients = []string{}
+		}
+		out = append(out, &pb.EmailInboxMessage{
+			Id:             row.ID,
+			MailboxEmail:   normalizeEmail(row.MailboxEmail),
+			Subject:        row.Subject,
+			FromAddress:    row.FromAddress,
+			BodyPreview:    row.BodyPreview,
+			ReceivedAtUnix: row.ReceivedAtUnix,
+			Recipients:     uniqueStrings(recipients),
+			Otp:            row.OTP,
+		})
+	}
+	return out, rows.Err()
 }
 
 func (s *MailboxStore) UpsertLatestOTP(ctx context.Context, email string, otp string, subject string, sourceEmail string, receivedAtUnix int64) error {
@@ -712,6 +830,9 @@ func (s *MailboxStore) DeleteMailbox(ctx context.Context, email string) (bool, e
 	}
 	inClause := strings.Join(placeholders, ",")
 	if _, err := tx.Exec(ctx, "DELETE FROM mailbox_latest_otps WHERE email IN ("+inClause+")", args...); err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(ctx, "DELETE FROM mailbox_inbox_messages WHERE mailbox_email IN ("+inClause+")", args...); err != nil {
 		return false, err
 	}
 	if _, err := tx.Exec(ctx, "DELETE FROM mailbox_inbox_seen WHERE mailbox_email IN ("+inClause+")", args...); err != nil {

@@ -139,15 +139,23 @@ func (w *MailWatcher) FetchMailboxInbox(ctx context.Context, mailbox *pb.EmailMa
 	if err != nil {
 		return nil, err
 	}
-	messages, err := w.fetchMailboxMessages(ctx, mailbox, messageLimitValue(limit, w.messageLimit), inboxReceivedAfter(watermark, w.inboxOverlap))
+	messageLimit := messageLimitValue(limit, w.messageLimit)
+	receivedAfter := inboxReceivedAfter(watermark, w.inboxOverlap)
+	hasPersistedMessages, err := w.store.HasInboxMessages(ctx, mailbox.GetEmailAddress())
 	if err != nil {
 		return nil, err
 	}
-	unseen, err := w.store.RecordInboxMessages(ctx, mailbox.GetEmailAddress(), messages)
+	if !hasPersistedMessages {
+		receivedAfter = 0
+	}
+	messages, err := w.fetchMailboxMessages(ctx, mailbox, messageLimit, receivedAfter)
 	if err != nil {
 		return nil, err
 	}
-	return inboxMessages(mailbox.GetEmailAddress(), unseen), nil
+	if _, err := w.store.RecordInboxMessages(ctx, mailbox.GetEmailAddress(), messages); err != nil {
+		return nil, err
+	}
+	return w.store.ListInboxMessages(ctx, mailbox.GetEmailAddress(), int32(messageLimit))
 }
 
 func (w *MailWatcher) fetchMailboxMessages(ctx context.Context, mailbox *pb.EmailMailbox, limit int, receivedAfterNs int64) ([]graphMessage, error) {
@@ -337,24 +345,27 @@ func (w *MailWatcher) cacheOTP(subject string, otp string, recipients []string, 
 func inboxMessages(mailboxEmail string, messages []graphMessage) []*pb.EmailInboxMessage {
 	out := make([]*pb.EmailInboxMessage, 0, len(messages))
 	for _, msg := range messages {
-		bodyPreview := strings.TrimSpace(msg.BodyPreview)
-		if bodyPreview == "" {
-			bodyPreview = compactMessageText(msg.Body.Content, 500)
-		}
-		receivedAt := int64(parseGraphTime(msg.ReceivedDateTime))
-		body := msg.BodyPreview + "\n" + msg.Body.Content
-		out = append(out, &pb.EmailInboxMessage{
-			Id:             msg.ID,
-			MailboxEmail:   normalizeEmail(mailboxEmail),
-			Subject:        strings.TrimSpace(msg.Subject),
-			FromAddress:    strings.TrimSpace(msg.From.EmailAddress.Address),
-			BodyPreview:    compactMessageText(bodyPreview, 500),
-			ReceivedAtUnix: receivedAt,
-			Recipients:     uniqueStrings(messageAddresses(msg)),
-			Otp:            extractOTP(body),
-		})
+		out = append(out, inboxMessage(mailboxEmail, msg))
 	}
 	return out
+}
+
+func inboxMessage(mailboxEmail string, msg graphMessage) *pb.EmailInboxMessage {
+	bodyPreview := strings.TrimSpace(msg.BodyPreview)
+	if bodyPreview == "" {
+		bodyPreview = compactMessageText(msg.Body.Content, 500)
+	}
+	body := msg.BodyPreview + "\n" + msg.Body.Content
+	return &pb.EmailInboxMessage{
+		Id:             msg.ID,
+		MailboxEmail:   normalizeEmail(mailboxEmail),
+		Subject:        strings.TrimSpace(msg.Subject),
+		FromAddress:    strings.TrimSpace(msg.From.EmailAddress.Address),
+		BodyPreview:    compactMessageText(bodyPreview, 500),
+		ReceivedAtUnix: int64(parseGraphTime(msg.ReceivedDateTime)),
+		Recipients:     uniqueStrings(messageAddresses(msg)),
+		Otp:            extractOTP(body),
+	}
 }
 
 func compactMessageText(value string, limit int) string {

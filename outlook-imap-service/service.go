@@ -135,6 +135,10 @@ func (s *EmailService) FetchInboxes(ctx context.Context, request *pb.FetchInboxe
 		messages, err := s.watcher.FetchMailboxInbox(ctx, target.fetchMailbox, request.GetLimitPerMailbox())
 		if err != nil {
 			result.ErrorMessage = err.Error()
+			if cached, cacheErr := s.store.ListInboxMessages(ctx, target.fetchMailbox.GetEmailAddress(), request.GetLimitPerMailbox()); cacheErr == nil {
+				result.Messages = cached
+				resp.MessageCount += int32(len(cached))
+			}
 			resp.FailedCount++
 		} else {
 			result.Messages = messages
