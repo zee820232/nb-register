@@ -52,6 +52,8 @@ wa_otp.txt
 gopay-payment/captures/
 gopay-payment/output/
 captures/
+gopay-capture/
+gopay-emulator/
 node_modules/
 
 # Test
@@ -107,4 +109,5 @@ gopay-payment/**/*.pyc
 # Scratch
 scratch/
 .playwright-cli/
+memdump.bin
 .env
