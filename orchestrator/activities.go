@@ -27,6 +27,26 @@ func isFreeTrialIneligibleError(err error) bool {
 	return strings.Contains(text, "checkout amount") && strings.Contains(text, "not free-trial 0")
 }
 
+func accountEligibleForActivation(account *pb.Account) error {
+	if account == nil {
+		return fmt.Errorf("account is required")
+	}
+	tier := normalizeTier(account.GetTier())
+	if tier != "free" {
+		if tier == "" {
+			return fmt.Errorf("account tier is unknown; probe tier before activation")
+		}
+		return fmt.Errorf("account tier %q cannot be activated; only free tier with trial eligibility is allowed", tier)
+	}
+	if account.PlusTrialEligible == nil {
+		return fmt.Errorf("plus trial eligibility is unknown; probe trial eligibility before activation")
+	}
+	if !account.GetPlusTrialEligible() {
+		return fmt.Errorf("account is not plus trial eligible")
+	}
+	return nil
+}
+
 func (s *orchestratorServer) CreateJobActivity(ctx context.Context, input CreateJobInput) error {
 	_, err := s.createJobWithID(ctx, input.JobID, input.AccountID, input.Action, input.Params)
 	return err
@@ -215,7 +235,7 @@ func (s *orchestratorServer) markOpenAIAccountRegistered(ctx context.Context, ac
 	if account.GetEmail() != "" {
 		_, err := s.emailClient.MarkEmailStatus(ctx, &pb.MarkEmailStatusRequest{
 			EmailAddress: account.GetEmail(),
-			Status:       emailStatusRegistered,
+			Status:       emailStatusUserAlreadyExists,
 			LastError:    cause.Error(),
 		})
 		if err != nil && status.Code(err) != codes.NotFound {
@@ -224,7 +244,7 @@ func (s *orchestratorServer) markOpenAIAccountRegistered(ctx context.Context, ac
 	}
 	return s.updateAccount(ctx, &pb.Account{
 		AccountId:    account.GetAccountId(),
-		Status:       accountStatusRegistered,
+		Status:       accountStatusEmailAlreadyExists,
 		ErrorMessage: cause.Error(),
 	})
 }
@@ -280,6 +300,9 @@ func (s *orchestratorServer) GoPayPaymentAtomicActivity(ctx context.Context, inp
 	if err != nil {
 		return GoPayActivityOutput{}, err
 	}
+	if err := accountEligibleForActivation(account); err != nil {
+		return GoPayActivityOutput{}, err
+	}
 
 	var result *pb.GoPayResponse
 	var data map[string]any
@@ -304,6 +327,7 @@ func (s *orchestratorServer) GoPayPaymentAtomicActivity(ctx context.Context, inp
 		SnapToken:         result.GetSnapToken(),
 		PlusTrialEligible: true,
 		PlusTrialChecked:  true,
+		PlusActive:        true,
 		Data:              data,
 	}, nil
 }
@@ -337,14 +361,18 @@ func (s *orchestratorServer) ProbePlusTrialAtomicActivity(ctx context.Context, i
 			output.Success = resp.GetSuccess()
 			output.Checked = resp.GetChecked()
 			output.PlusTrialEligible = resp.GetPlusTrialEligible()
+			output.PlusActive = resp.GetPlusActive()
 			output.Amount = resp.GetAmount()
 			output.Currency = resp.GetCurrency()
 			output.Source = resp.GetSource()
+			output.PlanType = resp.GetPlanType()
 			output.CheckoutURL = resp.GetCheckoutUrl()
 			output.ErrorMessage = resp.GetErrorMessage()
 			data["success"] = resp.GetSuccess()
 			data["checked"] = resp.GetChecked()
 			data["plus_trial_eligible"] = resp.GetPlusTrialEligible()
+			data["plus_active"] = resp.GetPlusActive()
+			data["plan_type"] = resp.GetPlanType()
 			data["amount"] = resp.GetAmount()
 			data["currency"] = resp.GetCurrency()
 			data["source"] = resp.GetSource()
@@ -365,10 +393,93 @@ func (s *orchestratorServer) ProbePlusTrialAtomicActivity(ctx context.Context, i
 			return data, fmt.Errorf("%s", msg)
 		}
 		if resp.GetChecked() {
-			if updateErr := s.updateAccount(ctx, &pb.Account{
+			tier := normalizeTier(resp.GetPlanType())
+			if tier == "" && !resp.GetPlusActive() {
+				tier = "free"
+			}
+			update := &pb.Account{
 				AccountId:         input.AccountID,
 				PlusTrialEligible: boolPtr(resp.GetPlusTrialEligible()),
-			}); updateErr != nil {
+				PlusActive:        boolPtr(resp.GetPlusActive()),
+				Tier:              tier,
+			}
+			if resp.GetPlusActive() {
+				update.Status = accountStatusActivated
+				update.ErrorMessage = ""
+			}
+			if updateErr := s.updateAccount(ctx, update); updateErr != nil {
+				data["account_update_error"] = updateErr.Error()
+				return data, updateErr
+			}
+			data["account_updated"] = true
+		}
+		return data, nil
+	})
+	if err != nil {
+		return output, err
+	}
+	return output, nil
+}
+
+func (s *orchestratorServer) ProbeTierAtomicActivity(ctx context.Context, input ProbeTierActivityInput) (ProbeTierActivityOutput, error) {
+	account, err := s.getAccount(ctx, input.AccountID)
+	if err != nil {
+		return ProbeTierActivityOutput{}, err
+	}
+
+	var output ProbeTierActivityOutput
+	_, err = s.runAtomicStep(ctx, input.JobID, stepProbeTier, false, true, func() (any, error) {
+		sessionToken := strings.TrimSpace(account.GetSessionToken())
+		data := map[string]any{
+			"account_id":            account.GetAccountId(),
+			"session_token_present": sessionToken != "",
+		}
+		output.Data = data
+		if sessionToken == "" {
+			return data, fmt.Errorf("session_token is required")
+		}
+		resp, callErr := s.paymentClient.ProbeTier(ctx, &pb.ProbeTierPaymentRequest{
+			SessionToken: sessionToken,
+		})
+		data["tier_probe"] = tierProbeData(resp)
+		if resp != nil {
+			output.Success = resp.GetSuccess()
+			output.Checked = resp.GetChecked()
+			output.Tier = normalizeTier(resp.GetTier())
+			output.PlusActive = resp.GetPlusActive()
+			output.Source = resp.GetSource()
+			output.ErrorMessage = resp.GetErrorMessage()
+			data["success"] = resp.GetSuccess()
+			data["checked"] = resp.GetChecked()
+			data["tier"] = output.Tier
+			data["plus_active"] = resp.GetPlusActive()
+			data["source"] = resp.GetSource()
+			data["error_message"] = resp.GetErrorMessage()
+		}
+		if callErr != nil {
+			return data, callErr
+		}
+		if resp == nil {
+			return data, fmt.Errorf("payment service returned empty tier response")
+		}
+		if !resp.GetSuccess() {
+			msg := resp.GetErrorMessage()
+			if msg == "" {
+				msg = "tier probe failed"
+			}
+			return data, fmt.Errorf("%s", msg)
+		}
+		if resp.GetChecked() {
+			update := &pb.Account{
+				AccountId:   input.AccountID,
+				Tier:        output.Tier,
+				PlusActive: boolPtr(resp.GetPlusActive()),
+			}
+			if resp.GetPlusActive() {
+				update.Status = accountStatusActivated
+				update.ErrorMessage = ""
+			}
+			if updateErr := s.updateAccount(ctx, update); updateErr != nil {
 				data["account_update_error"] = updateErr.Error()
 				return data, updateErr
 			}
@@ -744,10 +855,12 @@ func (s *orchestratorServer) PersistActivatedActivity(ctx context.Context, input
 	}
 	update := &pb.Account{
 		AccountId:    input.AccountID,
-		Status:       "ACTIVATED",
+		Status:       accountStatusActivated,
 		SessionToken: sessionToken,
 		AccessToken:  accessToken,
 		ChargeRef:    input.ChargeRef,
+		PlusActive:   boolPtr(true),
+		Tier:         "plus",
 	}
 	if input.PlusTrialChecked {
 		update.PlusTrialEligible = boolPtr(input.PlusTrialEligible)

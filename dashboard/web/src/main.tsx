@@ -55,6 +55,8 @@ type Account = {
   session_token: string;
   access_token: string;
   plus_trial_eligible?: boolean;
+  plus_active?: boolean;
+  tier: string;
   created_at: number;
   updated_at: number;
 };
@@ -188,7 +190,7 @@ const mailboxStatusLabels: DisplayLabelMap = {
   REGISTERED: '已注册',
   USER_ALREADY_EXISTS: '用户已存在',
   REGISTRATION_FAILED: '注册失败',
-  BLOCKED: '已封禁',
+  BLOCKED: '停止分配',
   AUTHORIZED: '已授权',
   OAUTH_PENDING: '待 OAuth',
   AUTH_FAILED: '认证失败',
@@ -200,7 +202,8 @@ const actionLabels: DisplayLabelMap = {
   LOGIN_SESSION: '登录取 Token',
   ACTIVATE: '激活支付',
   REGISTER_AND_ACTIVATE: '注册并激活',
-  PROBE_PLUS_TRIAL: '探测试用资格',
+  PROBE_PLUS_TRIAL: '探测资格',
+  PROBE_TIER: '探测 Tier',
   REGISTER_MAILBOX: '注册 Outlook 邮箱',
   MAILBOX_OAUTH: 'Microsoft OAuth'
 };
@@ -506,7 +509,7 @@ function App() {
 
   const primaryMailboxes = mailboxes.filter((mailbox) => mailbox.is_primary);
   const visiblePrimaryMailboxes = primaryMailboxes.filter((mailbox) => mailboxMatchesFilter(mailbox, mailboxes, mailboxStatus));
-  const usableMailboxCount = primaryMailboxes.filter((m) => m.status === 'AVAILABLE' && authStatus(m) === 'AUTHORIZED').length;
+  const allocatableMailboxCount = primaryMailboxes.filter((m) => m.status === 'AVAILABLE' && authStatus(m) === 'AUTHORIZED').length;
   const missingOAuthCount = primaryMailboxes.filter((mailbox) => (
     mailbox.password && authStatus(mailbox) !== 'AUTHORIZED' && authStatus(mailbox) !== 'NEEDS_MANUAL_VERIFICATION'
   )).length;
@@ -542,7 +545,7 @@ function App() {
       <section className="appFrame">
         <nav className="navRail" aria-label="主导航">
           <NavItem active={activeView === 'accounts'} icon={<Database size={17} />} label="账号" count={accounts.length} countLabel="全部账号数" onClick={() => openView('accounts')} />
-          <NavItem active={activeView === 'mailboxes'} icon={<Inbox size={17} />} label="邮箱管理" count={usableMailboxCount} countLabel="可取码主邮箱数" onClick={() => openView('mailboxes')} />
+          <NavItem active={activeView === 'mailboxes'} icon={<Inbox size={17} />} label="邮箱管理" count={allocatableMailboxCount} countLabel="可分配主邮箱数" onClick={() => openView('mailboxes')} />
           <NavItem active={activeView === 'mailboxRegistration'} icon={<Play size={17} />} label="邮箱注册" count={runningMailboxRegisterCount} countLabel="运行中的邮箱注册任务" onClick={() => openView('mailboxRegistration')} />
           <NavItem active={activeView === 'jobs'} icon={<ListChecks size={17} />} label="工作流" count={runningJobCount} countLabel="运行中的工作流任务" onClick={() => openView('jobs')} />
         </nav>
@@ -552,7 +555,7 @@ function App() {
             <section className="metrics">
               <Metric label="账号" value={accounts.length} hint="当前账号池总量" icon={<ShieldCheck />} />
               <Metric label="已激活" value={accounts.filter((a) => a.status === 'ACTIVATED').length} hint="可进入后续使用的账号" icon={<Zap />} />
-              <Metric label="可取码邮箱" value={usableMailboxCount} hint="AVAILABLE 且 OAuth 已授权" icon={<Mail />} />
+              <Metric label="可分配邮箱" value={allocatableMailboxCount} hint="AVAILABLE 且 OAuth 已授权" icon={<Mail />} />
               <Metric label="运行中任务" value={runningJobCount} hint="正在执行的工作流" icon={<Activity />} />
               <Metric label="可重试失败" value={retryableFailureCount} hint="失败且可直接重试" icon={<RefreshCcw />} />
             </section>
@@ -597,6 +600,7 @@ function App() {
                   onLogin={(account) => runAccountWorkflow(loginActionLabel(account), '/api/workflows/login', account)}
                   onActivate={(account) => runAccountWorkflow('激活账号', '/api/workflows/activate', account)}
                   onProbePlusTrial={(account) => runAccountWorkflow('资格探测', '/api/workflows/probe-plus-trial', account)}
+                  onProbeTier={(account) => runAccountWorkflow('Tier 探测', '/api/workflows/probe-tier', account)}
                   onRegisterActivate={(account) => runAccountWorkflow('注册并激活', '/api/workflows/register-and-activate', account)}
                   onRefreshAccessToken={refreshAccountAccessToken}
                   onDelete={deleteAccount}
@@ -704,6 +708,7 @@ function App() {
             onSessionSave={(account, sessionToken) => updateAccountAuth(account, { session_token: sessionToken })}
             onAccessSave={(account, accessToken) => updateAccountAuth(account, { access_token: accessToken })}
             onProbePlusTrial={(account) => runAccountWorkflow('资格探测', '/api/workflows/probe-plus-trial', account)}
+            onProbeTier={(account) => runAccountWorkflow('Tier 探测', '/api/workflows/probe-tier', account)}
             onLogin={(account) => runAccountWorkflow(loginActionLabel(account), '/api/workflows/login', account)}
             onRefreshAccessToken={refreshAccountAccessToken}
             refreshingAccessToken={refreshingAccessTokenIds.has(selectedAccount.account_id)}
@@ -834,7 +839,7 @@ function DetailDrawer({ open, title, onClose, children }: {
   );
 }
 
-function AccountDetails({ account, showSecrets, busy, refreshingAccessToken, onSessionSave, onAccessSave, onProbePlusTrial, onLogin, onRefreshAccessToken }: {
+function AccountDetails({ account, showSecrets, busy, refreshingAccessToken, onSessionSave, onAccessSave, onProbePlusTrial, onProbeTier, onLogin, onRefreshAccessToken }: {
   account: Account;
   showSecrets: boolean;
   busy: boolean;
@@ -842,6 +847,7 @@ function AccountDetails({ account, showSecrets, busy, refreshingAccessToken, onS
   onSessionSave: (account: Account, sessionToken: string) => Promise<void>;
   onAccessSave: (account: Account, accessToken: string) => Promise<void>;
   onProbePlusTrial: (account: Account) => void;
+  onProbeTier: (account: Account) => void;
   onLogin: (account: Account) => void;
   onRefreshAccessToken: (account: Account) => Promise<void>;
 }) {
@@ -861,14 +867,18 @@ function AccountDetails({ account, showSecrets, busy, refreshingAccessToken, onS
                 <KeyRound size={14} /> {loginActionLabel(account)}
               </Button>
             )}
-            <Button {...buttonHint('探测当前账号是否可用 Plus 试用')} disabled={busy || !canProbePlusTrial(account)} onClick={() => onProbePlusTrial(account)}>
+            <Button {...buttonHint('用 Session 探测当前账号 Tier')} disabled={busy || !canProbeTier(account)} onClick={() => onProbeTier(account)}>
+              <Search size={14} /> 探测 Tier
+            </Button>
+            <Button {...buttonHint('用 Session 探测当前账号 Plus 状态')} disabled={busy || !canProbePlusTrial(account)} onClick={() => onProbePlusTrial(account)}>
               <Search size={14} /> 探测资格
             </Button>
           </div>
         </div>
         <KV label="ID" value={account.account_id} mono />
         <KV label="状态" value={statusText(account.status)} copyValue={account.status || '-'} />
-        <KV label="试用资格" value={trialText(account.plus_trial_eligible)} />
+        <KV label="Tier" value={tierText(account.tier)} />
+        <KV label="Plus" value={plusText(account)} />
         <KV label="邮箱" value={showSecrets ? account.email : maskEmail(account.email)} copyValue={account.email} copyDisabled={!account.email || !showSecrets} copyHint="显示敏感信息后复制邮箱" />
         <KV label="密码" value={showSecrets ? account.password : mask(account.password)} copyValue={account.password} copyDisabled={!account.password || !showSecrets} copyHint="显示敏感信息后复制密码" mono />
         <TokenEditor label="Session" field="session_token" account={account} showSecrets={showSecrets} onSave={onSessionSave} />
@@ -974,7 +984,7 @@ function OtpSubmitter({ job, onSubmit }: {
   );
 }
 
-function AccountTable({ accounts, selected, showSecrets, runningAccountIds, refreshingAccessTokenIds, busy, onSelect, onRegister, onLogin, onActivate, onProbePlusTrial, onRegisterActivate, onRefreshAccessToken, onDelete }: {
+function AccountTable({ accounts, selected, showSecrets, runningAccountIds, refreshingAccessTokenIds, busy, onSelect, onRegister, onLogin, onActivate, onProbePlusTrial, onProbeTier, onRegisterActivate, onRefreshAccessToken, onDelete }: {
   accounts: Account[];
   selected?: string;
   showSecrets: boolean;
@@ -986,6 +996,7 @@ function AccountTable({ accounts, selected, showSecrets, runningAccountIds, refr
   onLogin: (a: Account) => void;
   onActivate: (a: Account) => void;
   onProbePlusTrial: (a: Account) => void;
+  onProbeTier: (a: Account) => void;
   onRegisterActivate: (a: Account) => void;
   onRefreshAccessToken: (a: Account) => Promise<void>;
   onDelete: (a: Account) => void;
@@ -998,16 +1009,15 @@ function AccountTable({ accounts, selected, showSecrets, runningAccountIds, refr
             <TableHead>账号</TableHead>
             <TableHead>密码</TableHead>
             <TableHead>状态</TableHead>
-            <TableHead>试用</TableHead>
-            <TableHead>Session</TableHead>
-            <TableHead>Access</TableHead>
+            <TableHead>Tier</TableHead>
+            <TableHead>Plus</TableHead>
             <TableHead>更新</TableHead>
             <TableHead>错误</TableHead>
             <TableHead>操作</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {accounts.length === 0 && <EmptyTableRow colSpan={9} text="暂无账号。可以先创建账号，或切换为全部状态查看。" />}
+          {accounts.length === 0 && <EmptyTableRow colSpan={8} text="暂无账号。可以先创建账号，或切换为全部状态查看。" />}
           {accounts.map((account) => {
             const accountBusy = runningAccountIds.has(account.account_id);
             const refreshingAccessToken = refreshingAccessTokenIds.has(account.account_id);
@@ -1025,9 +1035,8 @@ function AccountTable({ accounts, selected, showSecrets, runningAccountIds, refr
                     <StatusBadge status={account.status} />
                   </div>
                 </TableCell>
-                <TableCell data-label="试用"><TrialBadge eligible={account.plus_trial_eligible} /></TableCell>
-                <TableCell data-label="Session" className="mono">{showSecrets ? short(account.session_token, 18) : mask(account.session_token)}</TableCell>
-                <TableCell data-label="Access" className="mono">{showSecrets ? short(account.access_token, 18) : mask(account.access_token)}</TableCell>
+                <TableCell data-label="Tier"><TierBadge tier={account.tier} /></TableCell>
+                <TableCell data-label="Plus"><PlusBadge account={account} /></TableCell>
                 <TableCell data-label="更新">{formatUnix(account.updated_at)}</TableCell>
                 <TableCell data-label="错误" className="errorCell" title={account.error_message}>{compactCellError(account.error_message || '-')}</TableCell>
                 <TableCell data-label="操作">
@@ -1040,6 +1049,7 @@ function AccountTable({ accounts, selected, showSecrets, runningAccountIds, refr
                     onLogin={onLogin}
                     onActivate={onActivate}
                     onProbePlusTrial={onProbePlusTrial}
+                    onProbeTier={onProbeTier}
                     onRegisterActivate={onRegisterActivate}
                     onRefreshAccessToken={onRefreshAccessToken}
                     onDelete={onDelete}
@@ -1054,7 +1064,7 @@ function AccountTable({ accounts, selected, showSecrets, runningAccountIds, refr
   );
 }
 
-function AccountRowActions({ account, accountBusy, busy, refreshingAccessToken, onRegister, onLogin, onActivate, onProbePlusTrial, onRegisterActivate, onRefreshAccessToken, onDelete }: {
+function AccountRowActions({ account, accountBusy, busy, refreshingAccessToken, onRegister, onLogin, onActivate, onProbePlusTrial, onProbeTier, onRegisterActivate, onRefreshAccessToken, onDelete }: {
   account: Account;
   accountBusy: boolean;
   busy: boolean;
@@ -1063,6 +1073,7 @@ function AccountRowActions({ account, accountBusy, busy, refreshingAccessToken, 
   onLogin: (a: Account) => void;
   onActivate: (a: Account) => void;
   onProbePlusTrial: (a: Account) => void;
+  onProbeTier: (a: Account) => void;
   onRegisterActivate: (a: Account) => void;
   onRefreshAccessToken: (a: Account) => Promise<void>;
   onDelete: (a: Account) => void;
@@ -1074,6 +1085,7 @@ function AccountRowActions({ account, accountBusy, busy, refreshingAccessToken, 
   if (canActivate(account)) actions.push({ label: '激活支付', icon: <Zap size={14} />, onClick: () => onActivate(account), disabled: busy, kind: actions.length ? 'secondary' : 'primary' });
   if (canRefreshAccessToken(account)) actions.push({ label: refreshingAccessToken ? '获取中' : '获取 Access', icon: <KeyRound size={14} />, onClick: () => void onRefreshAccessToken(account), disabled: busy || refreshingAccessToken, kind: actions.length ? 'secondary' : 'primary' });
   if (canLoginSession(account)) actions.push({ label: loginActionLabel(account), icon: <KeyRound size={14} />, onClick: () => onLogin(account), disabled: busy, kind: actions.length ? 'secondary' : 'primary' });
+  if (canProbeTier(account)) actions.push({ label: '探测 Tier', icon: <Search size={14} />, onClick: () => onProbeTier(account), disabled: busy, kind: 'secondary' });
   if (canProbePlusTrial(account)) actions.push({ label: '探测资格', icon: <Search size={14} />, onClick: () => onProbePlusTrial(account), disabled: busy, kind: 'secondary' });
   if (canRegister(account)) actions.push({ label: '注册并激活', icon: <ShieldCheck size={14} />, onClick: () => onRegisterActivate(account), disabled: busy, kind: 'secondary' });
   actions.push({ label: '删除账号', icon: <Trash2 size={14} />, onClick: () => onDelete(account), disabled: busy, kind: 'danger' });
@@ -1706,6 +1718,18 @@ function statusText(status: string) {
   return accountStatusLabels[status] || jobStatusLabels[status] || mailboxStatusLabels[status] || status || '-';
 }
 
+function PlusBadge({ account }: { account: Account }) {
+  if (account.plus_active) return <Badge className="badge good">Plus</Badge>;
+  return <TrialBadge eligible={account.plus_trial_eligible} />;
+}
+
+function TierBadge({ tier }: { tier: string }) {
+  const value = tierText(tier);
+  const normalized = String(tier || '').trim().toLowerCase();
+  const cls = normalized === 'free' ? 'mid' : normalized ? 'good' : 'mid';
+  return <Badge className={`badge ${cls}`} variant={cls === 'good' ? 'default' : 'secondary'}>{value}</Badge>;
+}
+
 function TrialBadge({ eligible }: { eligible?: boolean }) {
   if (eligible === true) return <Badge className="badge good">0元</Badge>;
   if (eligible === false) return <Badge className="badge bad" variant="destructive">非0元</Badge>;
@@ -1746,11 +1770,19 @@ function canRegister(account: Account) {
 }
 
 function canActivate(account: Account) {
-  return account.status !== 'ACTIVATED' && (!!account.session_token || !!account.access_token);
+  return account.status !== 'ACTIVATED' &&
+    !account.plus_active &&
+    normalizeTier(account.tier) === 'free' &&
+    account.plus_trial_eligible === true &&
+    (!!account.session_token || !!account.access_token);
+}
+
+function canProbeTier(account: Account) {
+  return !!account.session_token;
 }
 
 function canProbePlusTrial(account: Account) {
-  return account.status !== 'ACTIVATED' && !!account.session_token;
+  return !!account.session_token;
 }
 
 function canRefreshAccessToken(account: Account) {
@@ -1899,6 +1931,19 @@ function trialText(value?: boolean) {
   if (value === true) return '0元试用';
   if (value === false) return '非0元';
   return '未知';
+}
+
+function plusText(account: Account) {
+  if (account.plus_active) return 'Plus 已开通';
+  return trialText(account.plus_trial_eligible);
+}
+
+function tierText(tier: string) {
+  return normalizeTier(tier) || '未知';
+}
+
+function normalizeTier(tier: string) {
+  return String(tier || '').trim().toLowerCase();
 }
 
 function errorText(err: unknown) {

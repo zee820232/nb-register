@@ -22,6 +22,8 @@ type Account struct {
 	LastName          string
 	DOB               string // YYYY-MM-DD
 	PlusTrialEligible *bool
+	PlusActive        *bool
+	Tier              string
 	CreatedAt         int64 `gorm:"autoCreateTime"`
 	UpdatedAt         int64 `gorm:"autoUpdateTime"`
 }

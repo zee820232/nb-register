@@ -594,23 +594,21 @@ table {
 }
 
 .accountsTable th:nth-child(1),
-.accountsTable td:nth-child(1) { width: 30%; }
+.accountsTable td:nth-child(1) { width: 27%; }
 .accountsTable th:nth-child(2),
-.accountsTable td:nth-child(2) { width: 12%; }
+.accountsTable td:nth-child(2) { width: 11%; }
 .accountsTable th:nth-child(3),
-.accountsTable td:nth-child(3) { width: 13%; }
+.accountsTable td:nth-child(3) { width: 12%; }
 .accountsTable th:nth-child(4),
 .accountsTable td:nth-child(4) { width: 8%; }
 .accountsTable th:nth-child(5),
-.accountsTable td:nth-child(5),
+.accountsTable td:nth-child(5) { width: 8%; }
 .accountsTable th:nth-child(6),
-.accountsTable td:nth-child(6) { display: none; }
+.accountsTable td:nth-child(6) { width: 12%; }
 .accountsTable th:nth-child(7),
-.accountsTable td:nth-child(7) { width: 15%; }
+.accountsTable td:nth-child(7) { display: none; }
 .accountsTable th:nth-child(8),
-.accountsTable td:nth-child(8) { display: none; }
-.accountsTable th:nth-child(9),
-.accountsTable td:nth-child(9) { width: 22%; }
+.accountsTable td:nth-child(8) { width: 22%; }
 
 .jobTable th:nth-child(1),
 .jobTable td:nth-child(1) { width: 15%; }

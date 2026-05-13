@@ -53,6 +53,7 @@ type GoPayActivityOutput struct {
 	SnapToken         string
 	PlusTrialEligible bool
 	PlusTrialChecked  bool
+	PlusActive        bool
 	Data              map[string]any
 }
 
@@ -61,16 +62,33 @@ type ProbePlusTrialActivityInput struct {
 	AccountID string
 }
 
+type ProbeTierActivityInput struct {
+	JobID     string
+	AccountID string
+}
+
 type ProbePlusTrialActivityOutput struct {
 	Success           bool
 	Checked           bool
 	PlusTrialEligible bool
+	PlusActive        bool
 	Amount            int64
 	Currency          string
 	Source            string
+	PlanType          string
 	CheckoutURL       string
 	ErrorMessage      string
 	Data              map[string]any
+}
+
+type ProbeTierActivityOutput struct {
+	Success      bool
+	Checked      bool
+	Tier         string
+	PlusActive   bool
+	Source       string
+	ErrorMessage string
+	Data         map[string]any
 }
 
 type LoginSessionActivityInput struct {
@@ -100,6 +118,7 @@ type PersistActivatedInput struct {
 	ChargeRef         string
 	PlusTrialEligible bool
 	PlusTrialChecked  bool
+	PlusActive        bool
 }
 
 type JobFailureInput struct {
@@ -185,6 +204,11 @@ type ProbePlusTrialWorkflowInput struct {
 	AccountID string
 }
 
+type ProbeTierWorkflowInput struct {
+	JobID     string
+	AccountID string
+}
+
 type LoginSessionWorkflowInput struct {
 	JobID     string
 	AccountID string
@@ -202,11 +226,23 @@ type ProbePlusTrialWorkflowResult struct {
 	Success           bool
 	Checked           bool
 	PlusTrialEligible bool
+	PlusActive        bool
 	Amount            int64
 	Currency          string
 	Source            string
+	PlanType          string
 	CheckoutURL       string
 	ErrorMessage      string
+}
+
+type ProbeTierWorkflowResult struct {
+	JobID        string
+	Success      bool
+	Checked      bool
+	Tier         string
+	PlusActive   bool
+	Source       string
+	ErrorMessage string
 }
 
 type RegisterAndActivateWorkflowInput struct {

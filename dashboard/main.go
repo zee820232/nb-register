@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -103,6 +104,12 @@ type updateAccountRequest struct {
 	AccessToken  string `json:"access_token"`
 }
 
+const (
+	nextAuthSessionCookieName         = "__Secure-next-auth.session-token"
+	nextAuthSessionCookieFallbackName = "next-auth.session-token"
+	nextAuthSessionCookieChunkSize    = 4096 - 163
+)
+
 func main() {
 	ctx := context.Background()
 
@@ -156,6 +163,7 @@ func main() {
 	mux.HandleFunc("/api/workflows/activate", s.handleActivate)
 	mux.HandleFunc("/api/workflows/login", s.handleLogin)
 	mux.HandleFunc("/api/workflows/probe-plus-trial", s.handleProbePlusTrial)
+	mux.HandleFunc("/api/workflows/probe-tier", s.handleProbeTier)
 	mux.HandleFunc("/api/workflows/register-and-activate", s.handleRegisterAndActivate)
 	mux.HandleFunc("/", s.handleStatic)
 
@@ -442,8 +450,7 @@ func (s *server) handleAccount(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		sessionToken := strings.TrimSpace(req.SessionToken)
-		accessToken := strings.TrimSpace(req.AccessToken)
+		sessionToken, accessToken := normalizeAccountAuthInput(req.SessionToken, req.AccessToken)
 		if sessionToken == "" && accessToken == "" {
 			writeError(w, http.StatusBadRequest, errors.New("session_token or access_token is required"))
 			return
@@ -516,11 +523,15 @@ func fetchChatGPTAccessToken(ctx context.Context, sessionToken string) (string, 
 	if err != nil {
 		return "", err
 	}
+	cookieHeader := chatGPTSessionCookieHeader(sessionToken)
+	if cookieHeader == "" {
+		return "", errors.New("session_token is required")
+	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	req.Header.Set("Referer", "https://chatgpt.com/")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36")
-	req.Header.Set("Cookie", "__Secure-next-auth.session-token="+strings.TrimSpace(sessionToken))
+	req.Header.Set("Cookie", cookieHeader)
 
 	resp, err := (&http.Client{Timeout: 25 * time.Second}).Do(req)
 	if err != nil {
@@ -542,6 +553,185 @@ func fetchChatGPTAccessToken(ctx context.Context, sessionToken string) (string, 
 		return "", errors.New("auth session did not return access token")
 	}
 	return accessToken, nil
+}
+
+func normalizeAccountAuthInput(sessionInput, accessInput string) (string, string) {
+	sessionToken := strings.TrimSpace(sessionInput)
+	accessToken := extractAccessToken(accessInput)
+	if payloadSession, payloadAccess := authSessionJSONTokens(sessionToken); payloadSession != "" || payloadAccess != "" {
+		if payloadSession != "" {
+			sessionToken = payloadSession
+		}
+		if accessToken == "" {
+			accessToken = payloadAccess
+		}
+	}
+	if payloadSession, payloadAccess := authSessionJSONTokens(accessInput); payloadSession != "" || payloadAccess != "" {
+		if sessionToken == "" {
+			sessionToken = payloadSession
+		}
+		if payloadAccess != "" {
+			accessToken = payloadAccess
+		}
+	}
+	if parsedSession := extractSessionToken(sessionToken); parsedSession != "" {
+		sessionToken = parsedSession
+	}
+	return strings.TrimSpace(sessionToken), strings.TrimSpace(accessToken)
+}
+
+func authSessionJSONTokens(raw string) (string, string) {
+	text := strings.TrimSpace(raw)
+	if !strings.HasPrefix(text, "{") {
+		return "", ""
+	}
+	var payload struct {
+		SessionToken string `json:"sessionToken"`
+		AccessToken  string `json:"accessToken"`
+	}
+	if err := json.Unmarshal([]byte(text), &payload); err != nil {
+		return "", ""
+	}
+	return strings.TrimSpace(payload.SessionToken), strings.TrimSpace(payload.AccessToken)
+}
+
+func extractAccessToken(raw string) string {
+	text := strings.TrimSpace(raw)
+	if _, accessToken := authSessionJSONTokens(text); accessToken != "" {
+		return accessToken
+	}
+	return text
+}
+
+func extractSessionToken(raw string) string {
+	text := strings.TrimSpace(raw)
+	if text == "" {
+		return ""
+	}
+	if sessionToken, _ := authSessionJSONTokens(text); sessionToken != "" {
+		return sessionToken
+	}
+	exact := ""
+	chunks := map[int]string{}
+	for _, part := range strings.Split(text, ";") {
+		name, value, ok := parseSessionCookiePart(part)
+		if !ok {
+			continue
+		}
+		if name == nextAuthSessionCookieName || name == nextAuthSessionCookieFallbackName {
+			exact = value
+			continue
+		}
+		if index, ok := sessionCookieChunkIndex(name); ok {
+			chunks[index] = value
+		}
+	}
+	if exact != "" {
+		return exact
+	}
+	if len(chunks) == 0 {
+		return ""
+	}
+	indexes := make([]int, 0, len(chunks))
+	for index := range chunks {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+	var b strings.Builder
+	for _, index := range indexes {
+		b.WriteString(chunks[index])
+	}
+	return b.String()
+}
+
+func chatGPTSessionCookieHeader(sessionToken string) string {
+	token := extractSessionToken(sessionToken)
+	if token == "" {
+		token = strings.TrimSpace(sessionToken)
+	}
+	if token == "" {
+		return ""
+	}
+	if strings.Contains(token, "=") {
+		parts := make([]string, 0, 2)
+		for _, part := range strings.Split(token, ";") {
+			name, value, ok := parseSessionCookiePart(part)
+			if ok {
+				parts = append(parts, name+"="+value)
+			}
+		}
+		if len(parts) > 0 {
+			sort.SliceStable(parts, func(i, j int) bool {
+				return sessionCookieSortKey(parts[i]) < sessionCookieSortKey(parts[j])
+			})
+			return strings.Join(parts, "; ")
+		}
+	}
+	if len(token) <= nextAuthSessionCookieChunkSize {
+		return nextAuthSessionCookieName + "=" + token
+	}
+	parts := make([]string, 0, (len(token)+nextAuthSessionCookieChunkSize-1)/nextAuthSessionCookieChunkSize)
+	for index, offset := 0, 0; offset < len(token); index, offset = index+1, offset+nextAuthSessionCookieChunkSize {
+		end := offset + nextAuthSessionCookieChunkSize
+		if end > len(token) {
+			end = len(token)
+		}
+		parts = append(parts, fmt.Sprintf("%s.%d=%s", nextAuthSessionCookieName, index, token[offset:end]))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func parseSessionCookiePart(raw string) (string, string, bool) {
+	part := strings.Trim(raw, " \t\r\n'\"\\")
+	for _, base := range []string{nextAuthSessionCookieName, nextAuthSessionCookieFallbackName} {
+		if idx := strings.Index(part, base); idx >= 0 {
+			part = part[idx:]
+			break
+		}
+	}
+	if !strings.Contains(part, "=") {
+		return "", "", false
+	}
+	name, value, _ := strings.Cut(part, "=")
+	name = strings.TrimSpace(name)
+	value = strings.Trim(value, " \t\r\n'\"\\")
+	for i, r := range value {
+		if r == '\'' || r == '"' || r == '\\' || r == ' ' || r == '\t' || r == '\r' || r == '\n' {
+			value = value[:i]
+			break
+		}
+	}
+	if !isSessionCookieName(name) || value == "" {
+		return "", "", false
+	}
+	return name, value, true
+}
+
+func isSessionCookieName(name string) bool {
+	if name == nextAuthSessionCookieName || name == nextAuthSessionCookieFallbackName {
+		return true
+	}
+	_, ok := sessionCookieChunkIndex(name)
+	return ok
+}
+
+func sessionCookieChunkIndex(name string) (int, bool) {
+	for _, base := range []string{nextAuthSessionCookieName, nextAuthSessionCookieFallbackName} {
+		prefix := base + "."
+		if strings.HasPrefix(name, prefix) {
+			index, err := strconv.Atoi(strings.TrimPrefix(name, prefix))
+			return index, err == nil
+		}
+	}
+	return 0, false
+}
+
+func sessionCookieSortKey(part string) int {
+	name, _, _ := strings.Cut(part, "=")
+	if index, ok := sessionCookieChunkIndex(name); ok {
+		return index
+	}
+	return -1
 }
 
 func (s *server) handleJobs(w http.ResponseWriter, r *http.Request) {
@@ -659,6 +849,13 @@ func (s *server) retryJob(w http.ResponseWriter, r *http.Request, jobID string) 
 			return
 		}
 		writeJSON(w, http.StatusOK, resp)
+	case "PROBE_TIER":
+		resp, err := s.orchestratorClient.ProbeTier(r.Context(), &pb.ProbeTierRequest{AccountId: job.AccountID})
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
 	case "REGISTER_AND_ACTIVATE":
 		resp, err := s.orchestratorClient.RegisterAndActivateAccount(r.Context(), &pb.RegisterAndActivateAccountRequest{AccountId: job.AccountID})
 		if err != nil {
@@ -740,6 +937,28 @@ func (s *server) handleProbePlusTrial(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp, err := s.orchestratorClient.ProbePlusTrial(r.Context(), &req)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	statusCode := http.StatusAccepted
+	if !resp.GetStarted() || resp.GetErrorMessage() != "" {
+		statusCode = http.StatusBadGateway
+	}
+	writeJSON(w, statusCode, resp)
+}
+
+func (s *server) handleProbeTier(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var req pb.ProbeTierRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	resp, err := s.orchestratorClient.ProbeTier(r.Context(), &req)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return

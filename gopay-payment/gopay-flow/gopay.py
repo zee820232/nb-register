@@ -34,6 +34,7 @@ Flow (15 steps):
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as _dt
 import json
 import os
@@ -62,6 +63,504 @@ def _new_session(impersonate: str = "chrome136") -> Any:
     if _CurlCffiSession is not None:
         return _CurlCffiSession(impersonate=impersonate)
     return requests.Session()
+
+
+_SESSION_PAID_BOOL_KEYS = {
+    "haspaid",
+    "haspaidsubscription",
+    "hasactivepaidsubscription",
+    "hasactivesubscription",
+    "hassubscription",
+    "ispaid",
+    "ispaidaccount",
+    "ispaidsubscriptionactive",
+    "ispaiduser",
+    "isplus",
+    "isplusaccount",
+    "isplususer",
+    "plusactive",
+    "subscribed",
+    "issubscribed",
+    "subscriber",
+}
+_SESSION_PLAN_KEYS = {
+    "accountplan",
+    "accountplantype",
+    "billingplan",
+    "license",
+    "plantype",
+    "plan",
+    "product",
+    "productid",
+    "sku",
+    "subscription",
+    "subscriptionplan",
+    "subscriptiontier",
+    "tier",
+}
+_SESSION_GROUP_KEYS = {"entitlement", "entitlements", "group", "groups", "roles"}
+_SESSION_ACTIVE_STATUSES = {"active", "paid", "subscribed", "trialing"}
+_SESSION_PAID_PLAN_RE = re.compile(r"(^|[_:/\-\s])(chatgpt[_:/\-\s]*)?(plus|pro|team|business|enterprise)([_:/\-\s]|$)")
+_SESSION_FREE_PLAN_RE = re.compile(r"(^|[_:/\-\s])(free|none|anonymous|unauthenticated)([_:/\-\s]|$)")
+_SESSION_COOKIE_NAME = "__Secure-next-auth.session-token"
+_SESSION_COOKIE_FALLBACK_NAME = "next-auth.session-token"
+_SESSION_COOKIE_CHUNK_SIZE = 4096 - 163
+
+
+def _session_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _session_string_plan(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    if _SESSION_PAID_PLAN_RE.search(text):
+        match = re.search(r"(plus|pro|team|business|enterprise)", text)
+        return match.group(1) if match else text[:80]
+    if _SESSION_FREE_PLAN_RE.search(text):
+        return "free"
+    return ""
+
+
+def _session_cookie_name(name: str) -> bool:
+    clean = str(name or "").strip()
+    for base in (_SESSION_COOKIE_NAME, _SESSION_COOKIE_FALLBACK_NAME):
+        if clean == base:
+            return True
+        if clean.startswith(base + ".") and clean[len(base) + 1:].isdigit():
+            return True
+    return False
+
+
+def _cookie_name(part: str) -> str:
+    return str(part or "").split("=", 1)[0].strip()
+
+
+def _ordered_session_cookie_parts(parts: list[str]) -> list[str]:
+    def sort_key(part: str) -> tuple[int, int, str]:
+        name = _cookie_name(part)
+        for base_order, base in enumerate((_SESSION_COOKIE_NAME, _SESSION_COOKIE_FALLBACK_NAME)):
+            if name == base:
+                return (base_order, -1, name)
+            prefix = base + "."
+            if name.startswith(prefix):
+                suffix = name[len(prefix):]
+                if suffix.isdigit():
+                    return (base_order, int(suffix), name)
+        return (99, 0, name)
+
+    return sorted(parts, key=sort_key)
+
+
+def _session_token_from_json(value: str) -> str:
+    text = str(value or "").strip()
+    if not text.startswith("{"):
+        return ""
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("sessionToken", "session_token"):
+        token = str(payload.get(key) or "").strip()
+        if token:
+            return token
+    return ""
+
+
+def _session_cookie_parts(value: str) -> list[str]:
+    """Build only the NextAuth session-cookie pieces from a token or Cookie header."""
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    if raw.lower().startswith("cookie:"):
+        raw = raw.split(":", 1)[1].strip()
+
+    json_token = _session_token_from_json(raw)
+    if json_token:
+        raw = json_token
+
+    if "=" in raw:
+        found: list[str] = []
+        for chunk in raw.split(";"):
+            part = chunk.strip().strip("'\"")
+            if "=" not in part:
+                continue
+            name, cookie_value = part.split("=", 1)
+            name = name.strip()
+            cookie_value = cookie_value.strip().strip("'\"")
+            if _session_cookie_name(name) and cookie_value:
+                found.append(f"{name}={cookie_value}")
+        if found:
+            return _ordered_session_cookie_parts(found)
+
+    token = raw.strip().strip("'\"")
+    if not token:
+        return []
+    if len(token) <= _SESSION_COOKIE_CHUNK_SIZE:
+        return [f"{_SESSION_COOKIE_NAME}={token}"]
+    return [
+        f"{_SESSION_COOKIE_NAME}.{index}={token[offset:offset + _SESSION_COOKIE_CHUNK_SIZE]}"
+        for index, offset in enumerate(range(0, len(token), _SESSION_COOKIE_CHUNK_SIZE))
+    ]
+
+
+def _normalize_tier(value: Any) -> str:
+    tier = str(value or "").strip().lower()
+    if tier in {"plus", "pro", "team", "business", "enterprise", "free"}:
+        return tier
+    return _session_string_plan(tier)
+
+
+def _decode_jwt_payload(token: Any) -> dict:
+    parts = str(token or "").split(".")
+    if len(parts) < 2:
+        return {}
+    payload = parts[1]
+    padding = "=" * (-len(payload) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode((payload + padding).encode("ascii"))
+        data = json.loads(decoded.decode("utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _tier_result(tier: str, source: str) -> dict:
+    normalized = _normalize_tier(tier)
+    if not normalized:
+        return {}
+    return {
+        "plus_active": normalized != "free",
+        "plan_type": normalized,
+        "tier": normalized,
+        "source": source,
+    }
+
+
+def _access_token_auth_claims(access_token: Any) -> dict:
+    token_payload = _decode_jwt_payload(access_token)
+    auth_claims = token_payload.get("https://api.openai.com/auth")
+    return auth_claims if isinstance(auth_claims, dict) else {}
+
+
+def _access_token_tier(access_token: Any, source_prefix: str = "accessToken.auth") -> dict:
+    auth_claims = _access_token_auth_claims(access_token)
+    for key in ("chatgpt_plan_type", "chatgpt_planType", "plan_type", "planType"):
+        result = _tier_result(auth_claims.get(key), f"{source_prefix}.{key}")
+        if result:
+            return result
+    return {}
+
+
+def _access_token_account_id(access_token: Any) -> str:
+    auth_claims = _access_token_auth_claims(access_token)
+    for key in ("chatgpt_account_id", "account_id"):
+        value = str(auth_claims.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _explicit_session_tier(payload: Any) -> dict:
+    if not isinstance(payload, dict):
+        return {}
+
+    token_result = _access_token_tier(payload.get("accessToken"))
+    if token_result:
+        return token_result
+
+    account = payload.get("account")
+    if isinstance(account, dict):
+        for key in ("planType", "plan_type", "accountPlan", "account_plan", "tier", "plan"):
+            result = _tier_result(account.get(key), f"account.{key}")
+            if result:
+                return result
+
+    return {}
+
+
+def _detect_plus_active_from_session_payload(payload: Any) -> dict:
+    """Best-effort parser for ChatGPT /api/auth/session subscription markers."""
+    explicit = _explicit_session_tier(payload)
+    if explicit:
+        return {
+            "checked": True,
+            "plus_active": bool(explicit.get("plus_active")),
+            "plan_type": str(explicit.get("plan_type") or ""),
+            "tier": str(explicit.get("tier") or ""),
+            "source": "auth_session:" + str(explicit.get("source") or "$"),
+            "error_message": "",
+        }
+
+    best_free: dict[str, str] = {}
+
+    def walk(value: Any, path: tuple[str, ...] = ()) -> Optional[dict]:
+        nonlocal best_free
+        key = _session_key(path[-1]) if path else ""
+        source = ".".join(path) or "$"
+
+        if isinstance(value, bool):
+            if value and key in _SESSION_PAID_BOOL_KEYS:
+                return {"plus_active": True, "plan_type": "paid", "source": source}
+            return None
+
+        if isinstance(value, str):
+            plan = _session_string_plan(value)
+            path_keys = {_session_key(part) for part in path}
+            plan_key = bool(path_keys & (_SESSION_PLAN_KEYS | _SESSION_GROUP_KEYS))
+            contextual_key = any(
+                part in path_key
+                for path_key in path_keys
+                for part in ("plan", "subscription", "tier", "product", "sku", "license", "entitlement", "group", "role")
+            )
+            if plan and (plan_key or contextual_key):
+                if plan == "free":
+                    if not best_free:
+                        best_free = {"plan_type": plan, "source": source}
+                    return None
+                return {"plus_active": True, "plan_type": plan, "source": source}
+            return None
+
+        if isinstance(value, dict):
+            status = ""
+            for status_key in ("status", "subscription_status", "subscriptionStatus", "state"):
+                raw_status = value.get(status_key)
+                if isinstance(raw_status, str):
+                    status = raw_status.strip().lower()
+                    break
+            local_plan = ""
+            local_plan_source = ""
+            for plan_key in ("plan", "plan_type", "planType", "account_plan", "accountPlan", "tier", "sku", "product"):
+                plan = _session_string_plan(value.get(plan_key))
+                if plan:
+                    local_plan = plan
+                    local_plan_source = ".".join(path + (plan_key,))
+                    break
+            if local_plan and local_plan != "free" and (not status or status in _SESSION_ACTIVE_STATUSES):
+                return {"plus_active": True, "plan_type": local_plan, "source": local_plan_source or source}
+            if local_plan == "free" and not best_free:
+                best_free = {"plan_type": "free", "source": local_plan_source or source}
+
+            for child_key, child_value in value.items():
+                hit = walk(child_value, path + (str(child_key),))
+                if hit:
+                    return hit
+            return None
+
+        if isinstance(value, list):
+            for index, child in enumerate(value):
+                hit = walk(child, path + (str(index),))
+                if hit:
+                    return hit
+            return None
+
+        return None
+
+    hit = walk(payload)
+    if hit:
+        return {
+            "checked": True,
+            "plus_active": True,
+            "plan_type": _normalize_tier(hit.get("plan_type")) or "paid",
+            "tier": _normalize_tier(hit.get("plan_type")) or "paid",
+            "source": "auth_session:" + str(hit.get("source") or "$"),
+            "error_message": "",
+        }
+    checked = isinstance(payload, dict) and ("user" in payload or "accessToken" in payload)
+    tier = best_free.get("plan_type", "")
+    if checked and not tier:
+        tier = "free"
+    return {
+        "checked": checked,
+        "plus_active": False,
+        "plan_type": tier,
+        "tier": tier,
+        "source": "auth_session:" + best_free.get("source", "no_paid_marker"),
+        "error_message": "",
+    }
+
+
+def probe_tier_access_token(
+    access_token: str,
+    *,
+    account_id: str = "",
+    proxy: Optional[str] = None,
+    log: Callable[[str], None] = print,
+) -> dict:
+    """Probe tier from ChatGPT backend bearer endpoints; fallback is handled by caller."""
+    token = str(access_token or "").strip()
+    if not token:
+        return {
+            "checked": False,
+            "plus_active": False,
+            "plan_type": "",
+            "tier": "",
+            "source": "wham_usage",
+            "error_message": "access_token is required",
+        }
+
+    session = _new_session()
+    try:
+        if proxy:
+            try:
+                session.proxies = {"http": proxy, "https": proxy}
+            except Exception:
+                pass
+        session.headers.update({
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": "codex-cli",
+        })
+        resolved_account_id = str(account_id or "").strip() or _access_token_account_id(token)
+        if resolved_account_id:
+            session.headers["ChatGPT-Account-Id"] = resolved_account_id
+        resp = _request_with_retries(
+            session,
+            "get",
+            "https://chatgpt.com/backend-api/wham/usage",
+            log=log,
+            timeout=DEFAULT_TIMEOUT,
+        )
+        if resp.status_code != 200:
+            return {
+                "checked": False,
+                "plus_active": False,
+                "plan_type": "",
+                "tier": "",
+                "source": "wham_usage",
+                "error_message": f"wham usage returned status {resp.status_code}",
+            }
+        payload = resp.json() or {}
+        result = _tier_result(payload.get("plan_type") or payload.get("planType"), "wham_usage.plan_type")
+        if not result:
+            return {
+                "checked": True,
+                "plus_active": False,
+                "plan_type": "",
+                "tier": "",
+                "source": "wham_usage",
+                "error_message": "wham usage returned no plan_type",
+            }
+        return {
+            "checked": True,
+            "plus_active": bool(result.get("plus_active")),
+            "plan_type": str(result.get("plan_type") or ""),
+            "tier": str(result.get("tier") or ""),
+            "source": str(result.get("source") or "wham_usage.plan_type"),
+            "error_message": "",
+        }
+    except Exception as exc:
+        return {
+            "checked": False,
+            "plus_active": False,
+            "plan_type": "",
+            "tier": "",
+            "source": "wham_usage",
+            "error_message": f"wham usage probe failed: {str(exc)[:500]}",
+        }
+    finally:
+        close = getattr(session, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+
+
+def probe_plus_active_session_token(
+    session_token: str,
+    *,
+    proxy: Optional[str] = None,
+    log: Callable[[str], None] = print,
+) -> dict:
+    """Probe ChatGPT Plus state directly from /api/auth/session using a session token."""
+    token = str(session_token or "").strip()
+    if not token:
+        return {
+            "checked": False,
+            "plus_active": False,
+            "plan_type": "",
+            "source": "auth_session",
+            "error_message": "session_token is required",
+        }
+
+    session = _new_session()
+    try:
+        if proxy:
+            try:
+                session.proxies = {"http": proxy, "https": proxy}
+            except Exception:
+                pass
+        session.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
+            ),
+            "Accept": "application/json",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://chatgpt.com/",
+            "Cookie": "; ".join(_session_cookie_parts(token)),
+        })
+        resp = _request_with_retries(
+            session,
+            "get",
+            "https://chatgpt.com/api/auth/session",
+            log=log,
+            timeout=DEFAULT_TIMEOUT,
+        )
+        if resp.status_code != 200:
+            return {
+                "checked": False,
+                "plus_active": False,
+                "plan_type": "",
+                "source": "auth_session",
+                "error_message": f"auth session returned status {resp.status_code}",
+            }
+        payload = resp.json() or {}
+        access_token = str(payload.get("accessToken") or "").strip() if isinstance(payload, dict) else ""
+        if access_token:
+            wham_result = probe_tier_access_token(
+                access_token,
+                account_id=_access_token_account_id(access_token),
+                proxy=proxy,
+                log=log,
+            )
+            if wham_result.get("checked") and (wham_result.get("tier") or wham_result.get("plan_type")):
+                return wham_result
+
+            token_result = _access_token_tier(access_token)
+            if token_result:
+                return {
+                    "checked": True,
+                    "plus_active": bool(token_result.get("plus_active")),
+                    "plan_type": str(token_result.get("plan_type") or ""),
+                    "tier": str(token_result.get("tier") or ""),
+                    "source": str(token_result.get("source") or "accessToken.auth"),
+                    "error_message": "",
+                }
+
+        result = _detect_plus_active_from_session_payload(payload)
+        if not result.get("checked"):
+            result["error_message"] = "auth session returned no authenticated user"
+        return result
+    except Exception as exc:
+        return {
+            "checked": False,
+            "plus_active": False,
+            "plan_type": "",
+            "source": "auth_session",
+            "error_message": f"auth session probe failed: {str(exc)[:500]}",
+        }
+    finally:
+        close = getattr(session, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
 
 
 # ──────────────────────────── constants ───────────────────────────
@@ -158,7 +657,7 @@ def _extract_reference_from_text(text: str) -> str:
 
     parsed = urlparse(text)
     query = parse_qs(parsed.query)
-    for key in ("reference", "reference_id", "referenceId"):
+    for key in ("reference", "reference_id", "referenceId", "tref"):
         value = next((item.strip() for item in query.get(key, []) if item.strip()), "")
         if value:
             return value
@@ -857,6 +1356,20 @@ class GoPayCharger:
             raise GoPayError(f"user-consent failed: {r.text[:300]}")
         self.log("[gopay] consent ok, OTP sent via WhatsApp")
 
+    def _gopay_resend_otp(self, reference_id: str):
+        """Try resend-otp to trigger SMS delivery."""
+        try:
+            r = self._ext_request(
+                "post",
+                "https://gwa.gopayapi.com/v1/linking/resend-otp",
+                json={"reference_id": reference_id},
+                headers=self._gopay_headers(locale=self.browser_locale),
+                timeout=DEFAULT_TIMEOUT,
+            )
+            self.log(f"[gopay] resend-otp status={r.status_code} body={r.text[:200]}")
+        except Exception as e:
+            self.log(f"[gopay] resend-otp failed: {e}")
+
     def _gopay_validate_otp(self, reference_id: str, otp: str) -> tuple[str, str]:
         """Returns (challenge_id, client_id) for PIN tokenization."""
         r = self._ext_request(
@@ -1124,6 +1637,7 @@ class GoPayCharger:
         self._gopay_validate_reference(reference_id)
         issued_after_unix = int(time.time())
         self._gopay_user_consent(reference_id)
+        self._gopay_resend_otp(reference_id)
         return {
             "cs_id": cs_id,
             "stripe_pk": stripe_pk,
@@ -1929,17 +2443,24 @@ def _build_chatgpt_session(auth_cfg: dict, proxy: Optional[str] = None) -> Any:
 
     parts = []
     seen = set()
+
+    def add_cookie_part(part: str) -> None:
+        p = str(part or "").strip()
+        if not p or "=" not in p:
+            return
+        n = _cookie_name(p)
+        if n and n not in seen:
+            seen.add(n)
+            parts.append(p)
+
     for raw in (cookie_header or "").split(";"):
-        p = raw.strip()
-        if p and "=" in p:
-            n = p.split("=", 1)[0].strip()
-            if n and n not in seen:
-                seen.add(n)
-                parts.append(p)
-    if session_token and "__Secure-next-auth.session-token" not in seen:
-        parts.append(f"__Secure-next-auth.session-token={session_token}")
+        add_cookie_part(raw)
+    has_session_cookie = any(_session_cookie_name(name) for name in seen)
+    if session_token and not has_session_cookie:
+        for part in _session_cookie_parts(session_token):
+            add_cookie_part(part)
     if device_id and "oai-did" not in seen:
-        parts.append(f"oai-did={device_id}")
+        add_cookie_part(f"oai-did={device_id}")
     s.headers["Cookie"] = "; ".join(parts)
     try:
         if not (session_token or cookie_header):

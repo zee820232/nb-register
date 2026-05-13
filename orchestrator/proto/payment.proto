@@ -33,6 +33,21 @@ message ProbePlusTrialPaymentResponse {
   string currency = 6;
   string source = 7;
   string checkout_url = 8;
+  bool plus_active = 9;
+  string plan_type = 10;
+}
+
+message ProbeTierPaymentRequest {
+  string session_token = 1;
+}
+
+message ProbeTierPaymentResponse {
+  bool success = 1;
+  string error_message = 2;
+  bool checked = 3;
+  string tier = 4;
+  bool plus_active = 5;
+  string source = 6;
 }
 
 message CompleteGoPayRequest {
@@ -59,6 +74,7 @@ message GoPayResponse {
 service PaymentService {
   rpc StartGoPay(StartGoPayRequest) returns (StartGoPayResponse);
   rpc ProbePlusTrial(ProbePlusTrialPaymentRequest) returns (ProbePlusTrialPaymentResponse);
+  rpc ProbeTier(ProbeTierPaymentRequest) returns (ProbeTierPaymentResponse);
   rpc CompleteGoPay(CompleteGoPayRequest) returns (GoPayResponse);
   rpc CancelGoPay(CancelGoPayRequest) returns (CancelGoPayResponse);
 }

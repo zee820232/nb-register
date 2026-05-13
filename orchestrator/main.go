@@ -28,6 +28,7 @@ const (
 	actionRegister            = "REGISTER"
 	actionActivate            = "ACTIVATE"
 	actionProbePlusTrial      = "PROBE_PLUS_TRIAL"
+	actionProbeTier           = "PROBE_TIER"
 	actionLoginSession        = "LOGIN_SESSION"
 	actionRegisterAndActivate = "REGISTER_AND_ACTIVATE"
 	actionRegisterMailbox     = "REGISTER_MAILBOX"
@@ -41,6 +42,7 @@ const (
 	statusFailedFinal       = "FAILED_FINAL"
 
 	accountStatusRegistered         = "REGISTERED"
+	accountStatusActivated          = "ACTIVATED"
 	accountStatusEmailAlreadyExists = "EMAIL_ALREADY_EXISTS"
 
 	emailStatusAvailable         = "AVAILABLE"
@@ -59,6 +61,7 @@ const (
 	stepRegisterAccount = "register_account"
 	stepGoPayPayment    = "gopay_payment"
 	stepProbePlusTrial  = "probe_plus_trial"
+	stepProbeTier       = "probe_tier"
 	stepLoginSession    = "login_session"
 	stepRegisterMailbox = "register_mailbox"
 	stepMailboxOAuth    = "mailbox_oauth"
@@ -825,6 +828,22 @@ func (s *orchestratorServer) ProbePlusTrial(ctx context.Context, req *pb.ProbePl
 	return &pb.ProbePlusTrialResponse{JobId: jobID, Started: true}, nil
 }
 
+func (s *orchestratorServer) ProbeTier(ctx context.Context, req *pb.ProbeTierRequest) (*pb.ProbeTierResponse, error) {
+	accountID := strings.TrimSpace(req.GetAccountId())
+	if accountID == "" {
+		return &pb.ProbeTierResponse{ErrorMessage: "account_id is required"}, nil
+	}
+	jobID := uuid.NewString()
+	_, err := s.temporal.ExecuteWorkflow(ctx, s.workflowOptions("probe-tier-"+jobID), ProbeTierWorkflow, ProbeTierWorkflowInput{
+		JobID:     jobID,
+		AccountID: accountID,
+	})
+	if err != nil {
+		return &pb.ProbeTierResponse{JobId: jobID, ErrorMessage: err.Error()}, nil
+	}
+	return &pb.ProbeTierResponse{JobId: jobID, Started: true}, nil
+}
+
 func (s *orchestratorServer) RegisterAndActivateAccount(ctx context.Context, req *pb.RegisterAndActivateAccountRequest) (*pb.RegisterAndActivateAccountResponse, error) {
 	jobID := uuid.NewString()
 	accountID := strings.TrimSpace(req.GetAccountId())
@@ -1135,10 +1154,28 @@ func plusTrialProbeData(resp *pb.ProbePlusTrialPaymentResponse) map[string]any {
 		"error_message":        resp.GetErrorMessage(),
 		"checked":              resp.GetChecked(),
 		"plus_trial_eligible":  resp.GetPlusTrialEligible(),
+		"plus_active":          resp.GetPlusActive(),
+		"plan_type":            resp.GetPlanType(),
+		"tier":                 normalizeTier(resp.GetPlanType()),
 		"amount":               resp.GetAmount(),
 		"currency":             resp.GetCurrency(),
 		"source":               resp.GetSource(),
 		"checkout_url_present": resp.GetCheckoutUrl() != "",
+	}
+}
+
+func tierProbeData(resp *pb.ProbeTierPaymentResponse) map[string]any {
+	if resp == nil {
+		return map[string]any{"response_present": false}
+	}
+	return map[string]any{
+		"response_present": true,
+		"success":          resp.GetSuccess(),
+		"error_message":    resp.GetErrorMessage(),
+		"checked":          resp.GetChecked(),
+		"tier":             resp.GetTier(),
+		"plus_active":      resp.GetPlusActive(),
+		"source":           resp.GetSource(),
 	}
 }
 
@@ -1198,6 +1235,10 @@ func (s *orchestratorServer) registrationOtpTimeout() int32 {
 func normalizeOTP(value string) string {
 	replacer := strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "", "-", "")
 	return strings.TrimSpace(replacer.Replace(value))
+}
+
+func normalizeTier(tier string) string {
+	return strings.ToLower(strings.TrimSpace(tier))
 }
 
 func main() {

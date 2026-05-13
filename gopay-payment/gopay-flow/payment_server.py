@@ -32,6 +32,7 @@ from gopay import (
     _build_chatgpt_session,
     _extract_otp_from_payload,
     _load_cfg,
+    probe_plus_active_session_token,
     probe_plus_trial_checkout,
     resolve_gopay_cfg,
     resolve_proxy,
@@ -346,6 +347,32 @@ class PaymentService(payment_pb2_grpc.PaymentServiceServicer):
     def close(self) -> None:
         self._flows.close()
 
+    def ProbeTier(self, request, context):
+        session_token = (request.session_token or "").strip()
+        if not session_token:
+            return payment_pb2.ProbeTierPaymentResponse(
+                success=False,
+                error_message="session_token is required",
+            )
+        try:
+            proxy = resolve_proxy(self._cfg)
+            result = probe_plus_active_session_token(
+                session_token,
+                proxy=proxy,
+                log=logger.info,
+            )
+            return payment_pb2.ProbeTierPaymentResponse(
+                success=not bool(result.get("error_message")),
+                error_message=str(result.get("error_message") or "")[:500],
+                checked=bool(result.get("checked")),
+                tier=str(result.get("tier") or result.get("plan_type") or ""),
+                plus_active=bool(result.get("plus_active")),
+                source=str(result.get("source") or "auth_session"),
+            )
+        except Exception as exc:
+            logger.exception("[payment] ProbeTier crashed")
+            return payment_pb2.ProbeTierPaymentResponse(success=False, error_message=str(exc)[:500])
+
     def ProbePlusTrial(self, request, context):
         session_token = (request.session_token or "").strip()
         access_token = (getattr(request, "access_token", "") or "").strip()
@@ -373,6 +400,38 @@ class PaymentService(payment_pb2_grpc.PaymentServiceServicer):
                 auth_cfg["access_token"] = access_token
 
             proxy = resolve_proxy(cfg)
+            session_probe = None
+            if session_token:
+                logger.info("[payment] ProbePlusSession start")
+                session_probe = probe_plus_active_session_token(
+                    session_token,
+                    proxy=proxy,
+                    log=logger.info,
+                )
+                if session_probe.get("checked") and session_probe.get("plus_active"):
+                    logger.info(
+                        "[payment] ProbePlusSession active plan=%s source=%s",
+                        session_probe.get("plan_type"),
+                        session_probe.get("source"),
+                    )
+                    return payment_pb2.ProbePlusTrialPaymentResponse(
+                        success=True,
+                        checked=True,
+                        plus_trial_eligible=False,
+                        source=str(session_probe.get("source") or "auth_session"),
+                        plus_active=True,
+                        plan_type=str(session_probe.get("tier") or session_probe.get("plan_type") or ""),
+                    )
+                if session_probe.get("error_message") and not access_token:
+                    return payment_pb2.ProbePlusTrialPaymentResponse(
+                        success=False,
+                        checked=bool(session_probe.get("checked")),
+                        error_message=str(session_probe.get("error_message") or "")[:500],
+                        source=str(session_probe.get("source") or "auth_session"),
+                        plus_active=False,
+                        plan_type=str(session_probe.get("tier") or session_probe.get("plan_type") or ""),
+                    )
+
             cs_session = _build_chatgpt_session(auth_cfg, proxy=proxy)
             stripe_pk = (
                 (cfg.get("stripe") or {}).get("publishable_key")
@@ -404,6 +463,8 @@ class PaymentService(payment_pb2_grpc.PaymentServiceServicer):
                 currency=str(result.get("currency") or ""),
                 source=str(result.get("source") or ""),
                 checkout_url=str(result.get("checkout_url") or ""),
+                plus_active=bool(session_probe and session_probe.get("plus_active")),
+                plan_type=str((session_probe or {}).get("tier") or (session_probe or {}).get("plan_type") or ""),
             )
         except GoPayError as exc:
             logger.error("[payment] ProbePlusTrial failed: %s", exc)

@@ -1,3 +1,5 @@
+import base64
+import json
 import unittest
 from unittest.mock import patch
 
@@ -9,7 +11,11 @@ from gopay import (
     _midtrans_charge_denial_message,
     _request_with_retries,
     _resolve_expected_amount,
+    _session_cookie_parts,
     _stripe_confirm_error_detail,
+    _detect_plus_active_from_session_payload,
+    probe_plus_active_session_token,
+    probe_tier_access_token,
     probe_plus_trial_checkout,
 )
 
@@ -33,6 +39,9 @@ class FakeExt:
         self.response = response
         self.headers = {}
         self.proxies = {}
+
+    def get(self, *args, **kwargs):
+        return self.response
 
     def post(self, *args, **kwargs):
         return self.response
@@ -230,6 +239,203 @@ class StripeExpectedAmountTests(unittest.TestCase):
 
 
 class PlusTrialProbeTests(unittest.TestCase):
+    def jwt_for_payload(self, payload):
+        encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+        return f"header.{encoded}.signature"
+
+    def test_session_payload_detects_account_plan_type(self):
+        result = _detect_plus_active_from_session_payload({
+            "user": {"id": "user-1"},
+            "account": {"planType": "plus"},
+        })
+
+        self.assertTrue(result["checked"])
+        self.assertTrue(result["plus_active"])
+        self.assertEqual(result["tier"], "plus")
+        self.assertEqual(result["source"], "auth_session:account.planType")
+
+    def test_session_payload_detects_access_token_plan_type(self):
+        access_token = self.jwt_for_payload({
+            "https://api.openai.com/auth": {
+                "chatgpt_plan_type": "plus",
+            },
+        })
+
+        result = _detect_plus_active_from_session_payload({
+            "user": {"id": "user-1"},
+            "accessToken": access_token,
+        })
+
+        self.assertTrue(result["checked"])
+        self.assertTrue(result["plus_active"])
+        self.assertEqual(result["tier"], "plus")
+        self.assertEqual(result["source"], "auth_session:accessToken.auth.chatgpt_plan_type")
+
+    def test_session_payload_prefers_access_token_plan_over_account_plan(self):
+        access_token = self.jwt_for_payload({
+            "https://api.openai.com/auth": {
+                "chatgpt_plan_type": "plus",
+            },
+        })
+
+        result = _detect_plus_active_from_session_payload({
+            "user": {"id": "user-1"},
+            "account": {"planType": "free"},
+            "accessToken": access_token,
+        })
+
+        self.assertTrue(result["checked"])
+        self.assertTrue(result["plus_active"])
+        self.assertEqual(result["tier"], "plus")
+        self.assertEqual(result["source"], "auth_session:accessToken.auth.chatgpt_plan_type")
+
+    def test_session_payload_detects_plus_group(self):
+        result = _detect_plus_active_from_session_payload({
+            "user": {"groups": ["chatgpt_plus_user"]},
+            "accessToken": "token",
+        })
+
+        self.assertTrue(result["checked"])
+        self.assertTrue(result["plus_active"])
+        self.assertEqual(result["plan_type"], "plus")
+
+    def test_session_cookie_parts_keep_browser_chunks(self):
+        parts = _session_cookie_parts(
+            "oai-did=device; __Secure-next-auth.session-token.1=tail; "
+            "__Secure-next-auth.session-token.0=head; other=value"
+        )
+
+        self.assertEqual(parts, [
+            "__Secure-next-auth.session-token.0=head",
+            "__Secure-next-auth.session-token.1=tail",
+        ])
+
+    def test_session_cookie_parts_chunk_long_raw_token(self):
+        token = "a" * (4096 - 163) + "bc"
+        parts = _session_cookie_parts(token)
+
+        self.assertEqual(parts, [
+            "__Secure-next-auth.session-token.0=" + ("a" * (4096 - 163)),
+            "__Secure-next-auth.session-token.1=bc",
+        ])
+
+    def test_session_cookie_parts_accept_auth_session_json(self):
+        parts = _session_cookie_parts(json.dumps({"sessionToken": "session-token"}))
+
+        self.assertEqual(parts, ["__Secure-next-auth.session-token=session-token"])
+
+    def test_session_token_probe_uses_auth_session(self):
+        session_resp = FakeResponse(
+            200,
+            payload={
+                "user": {"id": "user-1"},
+                "account": {"plan_type": "plus"},
+            },
+        )
+
+        with patch("gopay._new_session", return_value=FakeExt(session_resp)):
+            result = probe_plus_active_session_token("session-token", log=lambda _msg: None)
+
+        self.assertTrue(result["checked"])
+        self.assertTrue(result["plus_active"])
+        self.assertEqual(result["plan_type"], "plus")
+
+    def test_session_token_probe_sends_chunked_cookie_names(self):
+        session_resp = FakeResponse(
+            200,
+            payload={
+                "user": {"id": "user-1"},
+                "account": {"plan_type": "plus"},
+            },
+        )
+        fake = FakeExt(session_resp)
+
+        with patch("gopay._new_session", return_value=fake):
+            probe_plus_active_session_token("a" * (4096 - 163) + "bc", log=lambda _msg: None)
+
+        self.assertIn("__Secure-next-auth.session-token.0=", fake.headers["Cookie"])
+        self.assertIn("__Secure-next-auth.session-token.1=bc", fake.headers["Cookie"])
+
+    def test_session_token_probe_prefers_wham_usage_plan(self):
+        access_token = self.jwt_for_payload({
+            "https://api.openai.com/auth": {
+                "chatgpt_plan_type": "plus",
+                "chatgpt_account_id": "account-1",
+            },
+        })
+        session_resp = FakeResponse(
+            200,
+            payload={
+                "user": {"id": "user-1"},
+                "account": {"plan_type": "free"},
+                "accessToken": access_token,
+            },
+        )
+        wham_resp = FakeResponse(200, payload={"plan_type": "pro"})
+        wham = FakeExt(wham_resp)
+
+        with patch("gopay._new_session", side_effect=[FakeExt(session_resp), wham]):
+            result = probe_plus_active_session_token("session-token", log=lambda _msg: None)
+
+        self.assertTrue(result["checked"])
+        self.assertTrue(result["plus_active"])
+        self.assertEqual(result["tier"], "pro")
+        self.assertEqual(result["source"], "wham_usage.plan_type")
+        self.assertEqual(wham.headers["ChatGPT-Account-Id"], "account-1")
+
+    def test_session_token_probe_falls_back_to_access_token_claim(self):
+        access_token = self.jwt_for_payload({
+            "https://api.openai.com/auth": {
+                "chatgpt_plan_type": "plus",
+            },
+        })
+        session_resp = FakeResponse(
+            200,
+            payload={
+                "user": {"id": "user-1"},
+                "account": {"plan_type": "free"},
+                "accessToken": access_token,
+            },
+        )
+        wham_resp = FakeResponse(403, text="forbidden")
+
+        with patch("gopay._new_session", side_effect=[FakeExt(session_resp), FakeExt(wham_resp)]):
+            result = probe_plus_active_session_token("session-token", log=lambda _msg: None)
+
+        self.assertTrue(result["checked"])
+        self.assertTrue(result["plus_active"])
+        self.assertEqual(result["tier"], "plus")
+        self.assertEqual(result["source"], "accessToken.auth.chatgpt_plan_type")
+
+    def test_access_token_probe_reads_wham_usage(self):
+        wham = FakeExt(FakeResponse(200, payload={"plan_type": "team"}))
+
+        with patch("gopay._new_session", return_value=wham):
+            result = probe_tier_access_token("access-token", account_id="account-1", log=lambda _msg: None)
+
+        self.assertTrue(result["checked"])
+        self.assertTrue(result["plus_active"])
+        self.assertEqual(result["tier"], "team")
+        self.assertEqual(result["source"], "wham_usage.plan_type")
+        self.assertEqual(wham.headers["Authorization"], "Bearer access-token")
+        self.assertEqual(wham.headers["ChatGPT-Account-Id"], "account-1")
+
+    def test_session_token_probe_marks_authenticated_without_paid_marker_free(self):
+        session_resp = FakeResponse(
+            200,
+            payload={
+                "user": {"id": "user-1"},
+                "accessToken": "token",
+            },
+        )
+
+        with patch("gopay._new_session", return_value=FakeExt(session_resp)):
+            result = probe_plus_active_session_token("session-token", log=lambda _msg: None)
+
+        self.assertTrue(result["checked"])
+        self.assertFalse(result["plus_active"])
+        self.assertEqual(result["tier"], "free")
+
     def test_probe_marks_zero_amount_eligible(self):
         stripe_init = FakeResponse(
             200,

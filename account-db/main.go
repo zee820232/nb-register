@@ -136,10 +136,15 @@ func (s *accountDatabaseServer) buildAccount(input *pb.Account) (*db.Account, er
 		FirstName:    strings.TrimSpace(input.GetFirstName()),
 		LastName:     strings.TrimSpace(input.GetLastName()),
 		DOB:          strings.TrimSpace(input.GetDob()),
+		Tier:         normalizeTier(input.GetTier()),
 	}
 	if input.PlusTrialEligible != nil {
 		value := input.GetPlusTrialEligible()
 		account.PlusTrialEligible = &value
+	}
+	if input.PlusActive != nil {
+		value := input.GetPlusActive()
+		account.PlusActive = &value
 	}
 
 	if account.ID == "" {
@@ -221,6 +226,12 @@ func updateMap(account *pb.Account) map[string]interface{} {
 	if account.PlusTrialEligible != nil {
 		updates["plus_trial_eligible"] = account.GetPlusTrialEligible()
 	}
+	if account.PlusActive != nil {
+		updates["plus_active"] = account.GetPlusActive()
+	}
+	if value := normalizeTier(account.GetTier()); value != "" {
+		updates["tier"] = value
+	}
 	return updates
 }
 
@@ -243,6 +254,8 @@ func accountToProto(account *db.Account) *pb.Account {
 		CreatedAt:         account.CreatedAt,
 		UpdatedAt:         account.UpdatedAt,
 		PlusTrialEligible: account.PlusTrialEligible,
+		PlusActive:        account.PlusActive,
+		Tier:              account.Tier,
 	}
 }
 
@@ -275,6 +288,10 @@ func redactEmail(email string) string {
 
 func normalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
+}
+
+func normalizeTier(tier string) string {
+	return strings.ToLower(strings.TrimSpace(tier))
 }
 
 func main() {

@@ -20,6 +20,8 @@ message Account {
   int64 updated_at = 13;
   string access_token = 14;
   optional bool plus_trial_eligible = 15;
+  optional bool plus_active = 16;
+  string tier = 17;
 }
 
 message CreateAccountRequest {

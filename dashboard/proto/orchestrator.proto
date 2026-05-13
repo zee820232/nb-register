@@ -72,6 +72,16 @@ message ProbePlusTrialResponse {
   string error_message = 3;
 }
 
+message ProbeTierRequest {
+  string account_id = 1;
+}
+
+message ProbeTierResponse {
+  string job_id = 1;
+  bool started = 2;
+  string error_message = 3;
+}
+
 message RegisterAndActivateAccountRequest {
   reserved 1, 2, 3, 4, 5, 8, 9, 10;
   string email = 6;
@@ -202,6 +212,7 @@ service OrchestratorService {
   rpc ActivateAccount(ActivateAccountRequest) returns (ActivateAccountResponse);
   rpc LoginAccount(LoginAccountRequest) returns (LoginAccountResponse);
   rpc ProbePlusTrial(ProbePlusTrialRequest) returns (ProbePlusTrialResponse);
+  rpc ProbeTier(ProbeTierRequest) returns (ProbeTierResponse);
   rpc RegisterAndActivateAccount(RegisterAndActivateAccountRequest) returns (RegisterAndActivateAccountResponse);
   rpc RegisterMailbox(RegisterMailboxRequest) returns (RegisterMailboxResponse);
   rpc RunMailboxOAuth(StartMailboxOAuthRequest) returns (StartMailboxOAuthResponse);

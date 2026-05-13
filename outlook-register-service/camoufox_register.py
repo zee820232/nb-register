@@ -156,6 +156,105 @@ def _click_primary(page, timeout=10000):
     button.click(timeout=5000, force=True)
 
 
+def _password_input_visible(page) -> bool:
+    try:
+        _first_visible_locator(page, [
+            'input[type="password"]',
+            '[name="Password"]',
+            '[name="passwd"]',
+            'input[aria-label*="密码"]',
+            'input[aria-label*="Password"]',
+            'input[autocomplete="new-password"]',
+        ], timeout=400)
+        return True
+    except Exception:
+        return False
+
+
+def _visible_text_present(page, texts) -> bool:
+    for text in texts:
+        try:
+            matches = page.get_by_text(text)
+            for index in range(min(matches.count(), 6)):
+                if matches.nth(index).is_visible(timeout=100):
+                    return True
+        except Exception:
+            continue
+    return False
+
+
+def _email_unavailable_visible(page) -> bool:
+    return _visible_text_present(page, [
+        "该用户名已被占用",
+        "已被占用",
+        "请尝试其他选项",
+        "可用选项",
+        "is already taken",
+        "already taken",
+        "Someone already has",
+        "not available",
+        "unavailable",
+    ])
+
+
+def _suggested_email_locals(page, current_local: str, suffix: str) -> list[str]:
+    try:
+        suggestions = page.evaluate(
+            """({ currentLocal, suffix }) => {
+                const seen = new Set();
+                const out = [];
+                const add = (raw) => {
+                    let text = String(raw || '').trim().toLowerCase();
+                    if (!text) return;
+                    if (text.endsWith(suffix)) {
+                        text = text.slice(0, -suffix.length);
+                    }
+                    if (
+                        text !== currentLocal &&
+                        /^(?=.*\\d)[a-z][a-z0-9_-]{5,32}$/.test(text) &&
+                        !seen.has(text)
+                    ) {
+                        seen.add(text);
+                        out.push(text);
+                    }
+                };
+                const visible = (el) => {
+                    const rect = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    return rect.width > 0 && rect.height > 0 &&
+                        style.visibility !== 'hidden' && style.display !== 'none';
+                };
+                document.querySelectorAll('button, [role="button"], a, span, div').forEach((el) => {
+                    if (!visible(el)) return;
+                    const raw = (el.innerText || el.textContent || '').trim();
+                    raw.split(/\\s+/).forEach(add);
+                });
+                return out.slice(0, 6);
+            }""",
+            {"currentLocal": current_local.lower(), "suffix": suffix.lower()},
+        )
+        return [str(value).strip().lower() for value in suggestions if str(value).strip()]
+    except Exception:
+        return []
+
+
+def _wait_for_email_outcome(page, current_local: str, suffix: str, timeout=30000) -> str:
+    deadline = time.time() + timeout / 1000
+    unavailable_check_at = time.time() + 3.0
+    while time.time() < deadline:
+        if _password_input_visible(page):
+            return "password"
+        if time.time() >= unavailable_check_at:
+            if _email_unavailable_visible(page) or _suggested_email_locals(page, current_local, suffix):
+                return "unavailable"
+        page.wait_for_timeout(250)
+    if _password_input_visible(page):
+        return "password"
+    if _email_unavailable_visible(page) or _suggested_email_locals(page, current_local, suffix):
+        return "unavailable"
+    return "unknown"
+
+
 def _select_birth_value(page, field_name, value, option_texts):
     field = _first_visible_locator(page, [
         f'[name="{field_name}"]',
@@ -774,10 +873,71 @@ def outlook_register(
                     page.get_by_text("@outlook.com").click(timeout=10000)
                     page.locator('[role="option"]:text-is("@hotmail.com")').click()
 
-                page.locator('[aria-label="新建电子邮件"]').type(
-                    email_local, delay=int(0.006 * wait_ms), timeout=10000)
-                page.locator('[data-testid="primaryButton"]').click(timeout=5000)
-                page.wait_for_timeout(int(0.02 * wait_ms))
+                email_input_selectors = [
+                    '[aria-label="新建电子邮件"]',
+                    'input[aria-label*="新建"]',
+                    'input[aria-label*="电子邮件"]',
+                    'input[aria-label*="New email"]',
+                    'input[name="MemberName"]',
+                    'input[type="email"]',
+                    'input:not([type="hidden"]):not([type="password"])',
+                ]
+                attempted_locals: set[str] = set()
+                max_email_attempts = int(os.environ.get("OUTLOOK_REGISTER_EMAIL_ATTEMPTS", "5"))
+                for attempt in range(1, max_email_attempts + 1):
+                    full_email = email_local + email_suffix
+                    result["email"] = full_email
+                    attempted_locals.add(email_local.lower())
+                    logger.info("[outlook] Trying email (%d/%d): %s", attempt, max_email_attempts, full_email)
+
+                    email_input = _first_visible_locator(page, email_input_selectors, timeout=15000)
+                    _type_into(email_input, email_local)
+                    try:
+                        actual_local = email_input.input_value(timeout=2000).strip().lower()
+                        if actual_local != email_local.lower():
+                            logger.warning(
+                                "[outlook] Email input mismatch; expected=%s actual=%s; refilling",
+                                email_local,
+                                actual_local,
+                            )
+                            email_input.fill(email_local, timeout=5000)
+                    except Exception:
+                        pass
+
+                    _click_primary(page, timeout=5000)
+                    outcome = _wait_for_email_outcome(page, email_local, email_suffix, timeout=30000)
+                    if outcome == "password":
+                        break
+
+                    if outcome != "unavailable":
+                        page.screenshot(path=os.path.join(ss_dir, "outlook_email_error.png"))
+                        result["error"] = "Email submit did not reach password page"
+                        logger.error("[outlook] %s", result["error"])
+                        _debug_pause(result["error"])
+                        return result
+
+                    suggestions = [
+                        suggestion for suggestion in _suggested_email_locals(page, email_local, email_suffix)
+                        if suggestion.lower() not in attempted_locals
+                    ]
+                    if suggestions:
+                        email_local = suggestions[0]
+                        logger.info("[outlook] Email unavailable; retrying suggested local-part: %s", email_local)
+                    elif attempt < max_email_attempts:
+                        email_local = _gen_email_local()
+                        logger.info("[outlook] Email unavailable; retrying generated local-part: %s", email_local)
+                    else:
+                        page.screenshot(path=os.path.join(ss_dir, "outlook_email_error.png"))
+                        result["error"] = f"No available Outlook email accepted after {max_email_attempts} attempts"
+                        logger.error("[outlook] %s", result["error"])
+                        _debug_pause(result["error"])
+                        return result
+                else:
+                    page.screenshot(path=os.path.join(ss_dir, "outlook_email_error.png"))
+                    result["error"] = f"No available Outlook email accepted after {max_email_attempts} attempts"
+                    logger.error("[outlook] %s", result["error"])
+                    _debug_pause(result["error"])
+                    return result
             except Exception as e:
                 page.screenshot(path=os.path.join(ss_dir, "outlook_email_error.png"))
                 result["error"] = f"Email fill failed: {e}"
@@ -788,10 +948,17 @@ def outlook_register(
             # [3] Fill password
             logger.info("[outlook] Filling password...")
             try:
-                page.locator('[type="password"]').type(
-                    password, delay=int(0.004 * wait_ms), timeout=10000)
+                password_input = _first_visible_locator(page, [
+                    'input[type="password"]',
+                    '[name="Password"]',
+                    '[name="passwd"]',
+                    'input[aria-label*="密码"]',
+                    'input[aria-label*="Password"]',
+                    'input[autocomplete="new-password"]',
+                ], timeout=30000)
+                _type_into(password_input, password, delay=int(0.004 * wait_ms))
                 page.wait_for_timeout(int(0.02 * wait_ms))
-                page.locator('[data-testid="primaryButton"]').click(timeout=5000)
+                _click_primary(page, timeout=5000)
                 page.wait_for_timeout(int(0.03 * wait_ms))
             except Exception as e:
                 page.screenshot(path=os.path.join(ss_dir, "outlook_pwd_error.png"))

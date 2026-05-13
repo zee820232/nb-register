@@ -303,10 +303,9 @@ func (s *MailboxStore) ListOAuthPrimaryMailboxes(ctx context.Context, limit int3
 			WHERE is_primary = true
 			AND refresh_token <> ''
 			AND auth_status = $1
-			AND status <> $2
 			ORDER BY updated_at DESC
-			LIMIT $3
-		`, authStatusAuthorized, statusBlocked, n)
+			LIMIT $2
+		`, authStatusAuthorized, n)
 	if err != nil {
 		return nil, err
 	}
@@ -898,9 +897,6 @@ func (s *MailboxStore) PollMailboxForEmail(ctx context.Context, email string) (*
 	}
 	if primary.AuthStatus != authStatusAuthorized {
 		return nil, fmt.Errorf("primary mailbox is not authorized: %s auth_status=%s", redactEmail(primary.Email), primary.AuthStatus)
-	}
-	if primary.Status == statusBlocked {
-		return nil, fmt.Errorf("primary mailbox is not pollable: %s status=%s", redactEmail(primary.Email), primary.Status)
 	}
 	return primary.toProto(), nil
 }
