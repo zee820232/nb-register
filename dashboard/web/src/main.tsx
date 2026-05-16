@@ -633,6 +633,7 @@ function App() {
   const selectedMailboxBans = selectedMailbox ? bansForMailbox(inboxResponse, selectedMailbox.email_address) : [];
   const selectedMailboxAliases = selectedMailbox ? aliasesForMailbox(mailboxes, selectedMailbox) : [];
   const selectedAccountMailboxContext = selectedAccount ? mailboxContextForEmail(mailboxes, selectedAccount.email) : null;
+  const selectedAccountLatestOtp = selectedAccount ? latestOtpForEmail(inboxResponse, mailboxes, selectedAccount.email) : null;
   const mailboxRegisterJobs = jobs.filter((job) => job.action === 'REGISTER_MAILBOX');
   const runningMailboxRegisterCount = mailboxRegisterJobs.filter((job) => job.status === 'RUNNING').length;
   const gopayAppJobs = jobs.filter((job) => job.action === 'GOPAY_APP');
@@ -851,6 +852,7 @@ function App() {
             busy={busy}
             inboxLoading={inboxLoading}
             mailboxContext={selectedAccountMailboxContext}
+            latestOtp={selectedAccountLatestOtp}
             onCopy={copyField}
             onFetchInbox={fetchMailboxInbox}
             onSessionSave={(account, sessionToken) => updateAccountAuth(account, { session_token: sessionToken })}
@@ -988,13 +990,14 @@ function DetailDrawer({ open, title, onClose, children }: {
   );
 }
 
-function AccountDetails({ account, showSecrets, busy, inboxLoading, refreshingAccessToken, mailboxContext, onCopy, onFetchInbox, onSessionSave, onAccessSave, onProbeAccount, onCreateCheckoutLink, onLogin, onRefreshAccessToken }: {
+function AccountDetails({ account, showSecrets, busy, inboxLoading, refreshingAccessToken, mailboxContext, latestOtp, onCopy, onFetchInbox, onSessionSave, onAccessSave, onProbeAccount, onCreateCheckoutLink, onLogin, onRefreshAccessToken }: {
   account: Account;
   showSecrets: boolean;
   busy: boolean;
   inboxLoading: boolean;
   refreshingAccessToken: boolean;
   mailboxContext: AccountMailboxContext | null;
+  latestOtp: LatestOtp | null;
   onCopy: (label: string, value: string) => void;
   onFetchInbox: (emailAddress?: string) => Promise<void>;
   onSessionSave: (account: Account, sessionToken: string) => Promise<void>;
@@ -1031,6 +1034,7 @@ function AccountDetails({ account, showSecrets, busy, inboxLoading, refreshingAc
             </Button>
           </div>
         </div>
+        <AccountOtpPanel latestOtp={latestOtp} showSecrets={showSecrets} loading={inboxLoading} onCopy={onCopy} />
         <KV label="ID" value={account.account_id} mono onCopy={onCopy} />
         <KV label="状态" value={statusText(account.status)} copyValue={account.status || '-'} onCopy={onCopy} />
         <KV label="Tier" value={tierText(account.tier)} />
@@ -1043,6 +1047,34 @@ function AccountDetails({ account, showSecrets, busy, inboxLoading, refreshingAc
         <KV label="更新时间" value={formatUnix(account.updated_at)} onCopy={onCopy} />
         <KV label="错误" value={account.error_message || '-'} onCopy={onCopy} />
       </section>
+    </div>
+  );
+}
+
+function AccountOtpPanel({ latestOtp, showSecrets, loading, onCopy }: {
+  latestOtp: LatestOtp | null;
+  showSecrets: boolean;
+  loading: boolean;
+  onCopy: (label: string, value: string) => void;
+}) {
+  const hasOtp = !!latestOtp?.otp;
+  const subject = latestOtp?.subject || 'Latest OTP';
+  const displaySubject = showSecrets ? subject : maskPreview(subject);
+  const code = hasOtp ? latestOtp.otp : '';
+  const receivedAt = latestOtp?.received_at_unix || 0;
+
+  return (
+    <div className={`accountOtpPanel${hasOtp ? ' hasOtp' : ''}`} role="status" aria-live="polite">
+      <div>
+        <span>{loading ? '正在拉取 OTP' : '最近 OTP'}</span>
+        <strong className={hasOtp ? 'mono' : ''}>{hasOtp ? (showSecrets ? code : mask(code)) : '暂无 OTP'}</strong>
+        <small title={displaySubject}>
+          {hasOtp ? `${formatUnix(receivedAt)} · ${displaySubject}` : '点击拉取 OTP 后在这里显示最新验证码'}
+        </small>
+      </div>
+      <Button className="copyButton" {...buttonHint('复制 OTP')} disabled={!hasOtp} onClick={() => onCopy('OTP', code)}>
+        <Copy size={14} />
+      </Button>
     </div>
   );
 }
@@ -2311,9 +2343,33 @@ async function copyText(value: string): Promise<boolean> {
 }
 
 function copyTextFallback(value: string): boolean {
+  const text = String(value || '');
+  if (!text) return false;
+
+  let handledCopyEvent = false;
+  const copyHandler = (event: ClipboardEvent) => {
+    if (!event.clipboardData) return;
+    event.clipboardData.setData('text/plain', text);
+    event.preventDefault();
+    handledCopyEvent = true;
+  };
   try {
-    const textarea = document.createElement('textarea');
-    textarea.value = value;
+    document.addEventListener('copy', copyHandler);
+    if (document.execCommand('copy') && handledCopyEvent) {
+      return true;
+    }
+  } catch {
+    // Fall through to textarea-based copy for older browsers.
+  } finally {
+    document.removeEventListener('copy', copyHandler);
+  }
+
+  const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const container = activeElement?.closest<HTMLElement>('[data-slot="sheet-content"], [role="dialog"]') || document.body;
+  let textarea: HTMLTextAreaElement | null = null;
+  try {
+    textarea = document.createElement('textarea');
+    textarea.value = text;
     textarea.setAttribute('readonly', 'true');
     textarea.style.position = 'fixed';
     textarea.style.top = '0';
@@ -2321,15 +2377,25 @@ function copyTextFallback(value: string): boolean {
     textarea.style.width = '1px';
     textarea.style.height = '1px';
     textarea.style.opacity = '0';
-    document.body.appendChild(textarea);
+    textarea.style.pointerEvents = 'none';
+    textarea.style.fontSize = '16px';
+    container.appendChild(textarea);
     textarea.focus({ preventScroll: true });
     textarea.select();
     textarea.setSelectionRange(0, textarea.value.length);
     const copied = document.execCommand('copy');
-    document.body.removeChild(textarea);
     return copied;
   } catch {
     return false;
+  } finally {
+    if (textarea?.parentNode) {
+      textarea.parentNode.removeChild(textarea);
+    }
+    try {
+      activeElement?.focus({ preventScroll: true });
+    } catch {
+      activeElement?.focus();
+    }
   }
 }
 

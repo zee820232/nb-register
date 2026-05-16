@@ -186,7 +186,7 @@ input, select {
   position: fixed;
   right: 16px;
   bottom: 14px;
-  z-index: 5;
+  z-index: 100;
   max-width: min(420px, calc(100vw - 32px));
   padding: 8px 10px;
   border-radius: 8px;
@@ -1187,6 +1187,62 @@ tbody tr:hover, tr.selected { background: #f4f8ff; }
 
 .latestOtpPanel strong {
   color: var(--teal);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountOtpPanel {
+  margin: 0 0 12px;
+  min-height: 68px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 10px;
+}
+
+.accountOtpPanel.hasOtp {
+  border-color: #b7dfd2;
+  background: var(--teal-soft);
+}
+
+.accountOtpPanel div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.accountOtpPanel span,
+.accountOtpPanel small {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.accountOtpPanel span {
+  font-weight: 650;
+}
+
+.accountOtpPanel strong {
+  min-width: 0;
+  color: var(--text);
+  font-size: 20px;
+  line-height: 1.1;
+  letter-spacing: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountOtpPanel.hasOtp strong {
+  color: var(--teal);
+}
+
+.accountOtpPanel small {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

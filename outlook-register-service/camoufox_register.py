@@ -267,6 +267,7 @@ def _click_primary(page, timeout=10000):
     ], timeout=timeout)
     errors = []
     actions = [
+        lambda: _click_with_bezier(page, button, box_timeout=1500),
         lambda: button.click(timeout=2000),
         lambda: button.click(timeout=2000, force=True),
         lambda: button.evaluate("(el) => el.click()"),
@@ -295,6 +296,14 @@ def _password_input_visible(page) -> bool:
             'input[aria-label*="Password"]',
             'input[autocomplete="new-password"]',
         ], timeout=400)
+        return True
+    except Exception:
+        return False
+
+
+def _email_input_visible(page) -> bool:
+    try:
+        _first_visible_locator(page, OUTLOOK_EMAIL_INPUT_SELECTORS, timeout=400)
         return True
     except Exception:
         return False
@@ -419,6 +428,64 @@ def _wait_for_email_outcome(page, current_local: str, suffix: str, timeout=30000
     if _email_unavailable_visible(page) or _suggested_email_locals(page, current_local, suffix):
         return "unavailable"
     return "unknown"
+
+
+def _submit_email_and_wait(page, email_input, current_local: str, suffix: str) -> str:
+    max_submit_attempts = 4
+    outcome_timeout_ms = 20000
+
+    for submit_attempt in range(1, max_submit_attempts + 1):
+        logger.info("[outlook] Submitting email (%d/%d)", submit_attempt, max_submit_attempts)
+        try:
+            _click_primary(page, timeout=5000)
+        except Exception as exc:
+            logger.info("[outlook] Primary email submit failed: %s", exc)
+
+        page.wait_for_timeout(1000)
+        outcome = _wait_for_email_outcome(page, current_local, suffix, timeout=outcome_timeout_ms)
+        if outcome != "unknown":
+            return outcome
+
+        if not _email_input_visible(page):
+            continue
+
+        logger.info("[outlook] Still on email entry after submit; retrying")
+        for action in (
+            lambda: email_input.press("Enter", timeout=2000),
+            lambda: page.keyboard.press("Enter", timeout=2000),
+            lambda: page.evaluate(
+                """() => {
+                    const visible = (el) => {
+                        const rect = el.getBoundingClientRect();
+                        const style = window.getComputedStyle(el);
+                        return rect.width > 0 && rect.height > 0 &&
+                            style.visibility !== 'hidden' && style.display !== 'none';
+                    };
+                    for (const el of document.querySelectorAll('[data-testid="primaryButton"], button[type="submit"], button')) {
+                        const text = (el.innerText || el.textContent || '').trim().toLowerCase();
+                        if (visible(el) && (text === 'next' || text === 'continue' || el.type === 'submit')) {
+                            el.click();
+                            return true;
+                        }
+                    }
+                    const input = document.querySelector('input[type="email"], input[name*="MemberName" i], input[name*="email" i], input[aria-label*="email" i]');
+                    if (input && input.form) {
+                        if (input.form.requestSubmit) input.form.requestSubmit();
+                        else input.form.submit();
+                        return true;
+                    }
+                    return false;
+                }"""
+            ),
+        ):
+            try:
+                action()
+                page.wait_for_timeout(700)
+                break
+            except Exception:
+                continue
+
+    return _wait_for_email_outcome(page, current_local, suffix, timeout=3000)
 
 
 def _select_birth_value(page, field_name, value, option_texts):
@@ -1519,14 +1586,7 @@ def outlook_register(
                     except Exception:
                         pass
 
-                    _click_primary(page, timeout=5000)
-                    page.wait_for_timeout(1000)
-                    if not _password_input_visible(page) and not _email_unavailable_visible(page):
-                        try:
-                            email_input.press("Enter", timeout=2000)
-                        except Exception:
-                            pass
-                    outcome = _wait_for_email_outcome(page, email_local, email_suffix, timeout=30000)
+                    outcome = _submit_email_and_wait(page, email_input, email_local, email_suffix)
                     if outcome == "password":
                         break
 
