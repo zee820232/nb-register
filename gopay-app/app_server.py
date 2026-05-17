@@ -338,6 +338,20 @@ def _sync_profile_fields_from_gojek(state: dict, profile: dict, country_code: st
         state["phone"] = _normalize_phone(phone, country_code)
 
 
+def _fallback_profile_email(state: dict, country_code: str, normalized_phone: str) -> str:
+    for key in ("email", "_signup_email"):
+        email = str(state.get(key) or "").strip()
+        if email:
+            return email
+    email = GOPAY_SIGNUP_EMAIL
+    if email:
+        return email
+    digits = re.sub(r"\D", "", f"{country_code}{normalized_phone}")
+    if not digits:
+        digits = str(int(time.time()))
+    return f"gopay{digits}@gmail.com"
+
+
 def _change_phone_profile_body(state: dict, country_code: str, normalized_phone: str) -> dict:
     changed = False
     name = str(state.get("name") or "").strip()
@@ -347,7 +361,9 @@ def _change_phone_profile_body(state: dict, country_code: str, normalized_phone:
         changed = True
     email = str(state.get("email") or "").strip()
     if not email:
-        raise ValueError("current profile email missing")
+        email = _fallback_profile_email(state, country_code, normalized_phone)
+        state["email"] = email
+        changed = True
     if changed:
         save_state(state)
     return {

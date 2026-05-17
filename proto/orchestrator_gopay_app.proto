@@ -134,10 +134,12 @@ message GoPayRekberinajaAddBalance {
 
 message ManualAddBalanceSignal {
   string kind = 1;
+  GoPayAddBalance add_balance = 2;
 }
 
 message ConfirmManualAddBalanceRequest {
   string job_id = 1;
+  GoPayAddBalance add_balance = 2;
 }
 
 message ConfirmManualAddBalanceResponse {

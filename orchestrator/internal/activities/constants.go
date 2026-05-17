@@ -44,6 +44,11 @@ const (
 	emailAuthStatusNeedsManualVerify = "NEEDS_MANUAL_VERIFICATION"
 
 	stepRegisterAccount             = "register_account"
+	stepRegisterAccountStart        = "register_account_start"
+	stepRegisterAccountBrowser      = "register_account_browser"
+	stepRegisterAccountOTPRequest   = "register_account_otp_request"
+	stepRegisterAccountOTPWait      = "register_account_otp_wait"
+	stepRegisterAccountComplete     = "register_account_complete"
 	stepEnsureLogon                 = "ensure_logon"
 	stepGoPayAppLogin               = "gopay_app_login"
 	stepGoPayAppChangePhone         = "gopay_app_change_phone"
@@ -73,6 +78,11 @@ const (
 	stepProbePlusTrial              = "probe_plus_trial"
 	stepProbeTier                   = "probe_tier"
 	stepLoginSession                = "login_session"
+	stepLoginSessionStart           = "login_session_start"
+	stepLoginSessionBrowser         = "login_session_browser"
+	stepLoginSessionOTPRequest      = "login_session_otp_request"
+	stepLoginSessionOTPWait         = "login_session_otp_wait"
+	stepLoginSessionComplete        = "login_session_complete"
 	stepRegisterMailbox             = "register_mailbox"
 	stepMailboxOAuth                = "mailbox_oauth"
 

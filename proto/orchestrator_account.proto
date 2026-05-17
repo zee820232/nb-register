@@ -89,6 +89,25 @@ message BrowserAuthCompleteInput {
   string otp_source = 8;
 }
 
+message BrowserAuthWaitInput {
+  string job_id = 1;
+  string account_id = 2;
+  string flow_id = 3;
+  string mode = 4;
+  string email = 5;
+}
+
+message BrowserAuthWaitOutput {
+  string account_id = 1;
+  string flow_id = 2;
+  string email = 3;
+  bool otp_required = 4;
+  int64 otp_issued_after_unix = 5;
+  int32 otp_timeout_seconds = 6;
+  RegisterActivityOutput result = 7;
+  google.protobuf.Struct data = 8;
+}
+
 message BrowserAuthCancelInput {
   string flow_id = 1;
   string mode = 2;

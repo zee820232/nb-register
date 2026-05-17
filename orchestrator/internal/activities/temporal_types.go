@@ -4,6 +4,8 @@ import pb "orchestrator/pb"
 
 type AccountSpec = pb.AccountSpec
 type CreateJobInput = pb.CreateJobInput
+type JobStepStartInput = pb.JobStepStartInput
+type JobStepCompleteInput = pb.JobStepCompleteInput
 type EnsureAccountInput = pb.EnsureAccountInput
 type AccountRef = pb.AccountRef
 type ResolveAccountInput = pb.ResolveAccountInput
@@ -11,6 +13,8 @@ type ResolveAccountInput = pb.ResolveAccountInput
 type RegisterActivityOutput = pb.RegisterActivityOutput
 type BrowserAuthStartInput = pb.BrowserAuthStartInput
 type BrowserAuthStartOutput = pb.BrowserAuthStartOutput
+type BrowserAuthWaitInput = pb.BrowserAuthWaitInput
+type BrowserAuthWaitOutput = pb.BrowserAuthWaitOutput
 type BrowserAuthCompleteInput = pb.BrowserAuthCompleteInput
 type BrowserAuthCancelInput = pb.BrowserAuthCancelInput
 type OTPWaitInput = pb.OTPWaitInput

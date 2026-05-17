@@ -20,6 +20,22 @@ message CreateJobInput {
   map<string, string> params = 4;
 }
 
+message JobStepStartInput {
+  string job_id = 1;
+  string step_name = 2;
+  bool recoverable = 3;
+  bool retryable = 4;
+  google.protobuf.Struct detail = 5;
+}
+
+message JobStepCompleteInput {
+  string job_id = 1;
+  string step_name = 2;
+  bool recoverable = 3;
+  bool retryable = 4;
+  google.protobuf.Struct result = 5;
+}
+
 message ResolveAccountInput {
   string account_id = 1;
   string source_job_id = 2;

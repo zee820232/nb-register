@@ -847,7 +847,7 @@ func (s *server) handleJob(w http.ResponseWriter, r *http.Request) {
 			s.submitJobOTP(w, r, jobID)
 			return
 		case "add-balance":
-			if len(parts) != 3 || parts[2] != "confirm" {
+			if len(parts) != 3 {
 				writeError(w, http.StatusNotFound, fmt.Errorf("unsupported job add-balance action: %s", strings.Join(parts[1:], "/")))
 				return
 			}
@@ -855,7 +855,14 @@ func (s *server) handleJob(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusMethodNotAllowed)
 				return
 			}
-			s.confirmManualAddBalance(w, r, jobID)
+			switch parts[2] {
+			case "confirm":
+				s.confirmManualAddBalance(w, r, jobID)
+			case "select":
+				s.selectGoPayAddBalance(w, r, jobID)
+			default:
+				writeError(w, http.StatusNotFound, fmt.Errorf("unsupported job add-balance action: %s", strings.Join(parts[1:], "/")))
+			}
 			return
 		default:
 			writeError(w, http.StatusNotFound, fmt.Errorf("unsupported job action: %s", parts[1]))
@@ -998,6 +1005,25 @@ func (s *server) confirmManualAddBalance(w http.ResponseWriter, r *http.Request,
 	resp, err := s.gopayAppClient.ConfirmManualAddBalance(r.Context(), &pb.ConfirmManualAddBalanceRequest{
 		JobId: jobID,
 	})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	if resp.GetErrorMessage() != "" {
+		writeError(w, http.StatusBadRequest, errors.New(resp.GetErrorMessage()))
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *server) selectGoPayAddBalance(w http.ResponseWriter, r *http.Request, jobID string) {
+	var req pb.ConfirmManualAddBalanceRequest
+	if err := readProtoJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	req.JobId = jobID
+	resp, err := s.gopayAppClient.ConfirmManualAddBalance(r.Context(), &req)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return

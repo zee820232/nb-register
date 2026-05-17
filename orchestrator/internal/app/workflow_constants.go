@@ -6,9 +6,12 @@ const (
 	taskQueueDefault = contracts.TaskQueueDefault
 
 	createJobActivityName                        = contracts.CreateJobActivityName
+	startJobStepActivityName                     = contracts.StartJobStepActivityName
+	completeJobStepActivityName                  = contracts.CompleteJobStepActivityName
 	ensureAccountActivityName                    = contracts.EnsureAccountActivityName
 	resolveAccountActivityName                   = contracts.ResolveAccountActivityName
 	browserAuthStartActivityName                 = contracts.BrowserAuthStartActivityName
+	browserAuthWaitActivityName                  = contracts.BrowserAuthWaitActivityName
 	browserAuthCompleteActivityName              = contracts.BrowserAuthCompleteActivityName
 	browserAuthCancelActivityName                = contracts.BrowserAuthCancelActivityName
 	waitOTPActivityName                          = contracts.WaitOTPActivityName

@@ -230,7 +230,6 @@ services:
       - GOPAY_PIN=${GOPAY_PIN}
       - GOPAY_PHONE=${GOPAY_PHONE_NUMBER}
       - GOPAY_PROXY_POOL=${GOPAY_PROXY_POOL:-socks5://host.docker.internal:10810,socks5://host.docker.internal:10811,socks5://host.docker.internal:10813,http://host.docker.internal:10814}
-      - GOPAY_SIGNUP_AUTH_UUID=${GOPAY_SIGNUP_AUTH_UUID:-}
       - GOPAY_HMAC_KEY=${GOPAY_HMAC_KEY}
       - GOPAY_X_E2=${GOPAY_X_E2}
       - GOTO_CLIENT_SECRET=${GOTO_CLIENT_SECRET}

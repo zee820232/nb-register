@@ -286,6 +286,8 @@ sync_source() {
     --exclude '**/dist/' \
     --exclude '**/build/' \
     --exclude '**/*.log' \
+    --exclude 'gopay-capture/' \
+    --exclude 'gopay-emulator/*.mitm' \
     --exclude 'gopay-payment/gopay-flow/config.json' \
     ./ "$REMOTE_HOST:$REMOTE_DIR/"
 }

@@ -26,7 +26,6 @@ GOPAY_PHONE_NUMBER=
 GOPAY_WA_PHONE_NUMBER=
 GOPAY_PIN=
 GOPAY_PROXY_POOL=socks5://host.docker.internal:10810,socks5://host.docker.internal:10811,socks5://host.docker.internal:10813,http://host.docker.internal:10814
-GOPAY_SIGNUP_AUTH_UUID=
 GOPAY_ADD_BALANCE_MODE=manual_transfer
 GOPAY_UNIQUE_ID=
 GOPAY_APPSFLYER_ID=
@@ -166,7 +165,6 @@ GOPAY_PHONE_NUMBER=
 GOPAY_WA_PHONE_NUMBER=
 GOPAY_PIN=
 GOPAY_PROXY_POOL=socks5://host.docker.internal:10810,socks5://host.docker.internal:10811,socks5://host.docker.internal:10813,http://host.docker.internal:10814
-GOPAY_SIGNUP_AUTH_UUID=
 GOPAY_ADD_BALANCE_MODE=manual_transfer
 GOPAY_ADD_BALANCE_ENVELOPE_LINK=
 GOPAY_ADD_BALANCE_TRANSFER_INSTRUCTIONS=
@@ -201,7 +199,7 @@ GOPAY_STATIC_DEVICE_IDENTITY=false
 
 `GOPAY_PROXY_POOL` 为必填，支持逗号、空格或换行分隔，协议按实际入口填写 `socks5://`、`http://` 等。手机号探测遇到 429 时，同一个手机号会轮换到转轮里的下一个代理并生成新设备指纹；如果转回本次第一个代理仍未成功，本次流程失败。
 
-`GOPAY_ADD_BALANCE_MODE` 默认 `manual_transfer`，看板会在 GoPay 支付流程中展示转账二维码，并等待手动确认后继续。需要红包模式时改为 `envelope` 并配置 `GOPAY_ADD_BALANCE_ENVELOPE_LINK`；红包链接会写入 orchestrator DB 的 `runtime_secrets`，后续流程可长期复用，API 传入新 link 时会替换。需要 R 平台余额转账时改为 `rekberinaja`，并配置 R 平台 token、device、product、service 和 invoice email。R 平台 access/refresh token 初始从环境变量读取；刷新成功后会写入 `runtime_secrets`，后续流程优先使用 DB 中的新 token。
+GoPay 支付流程的 `add_balance` 编排参数可以为空；为空时流程会停在 `gopay_app_add_balance` step，由看板选择手动转账、红包或 R 平台。只有手动转账会继续等待人工确认；红包和 R 平台会自动提交并进入后续支付。红包链接会写入 orchestrator DB 的 `runtime_secrets`，后续流程可长期复用，API 传入新 link 时会替换。R 平台需要配置 token、device、product、service 和 invoice email；access/refresh token 初始从环境变量读取，刷新成功后会写入 `runtime_secrets`，后续流程优先使用 DB 中的新 token。
 
 ## CheckPhone Telegram Bot
 

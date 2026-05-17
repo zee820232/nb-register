@@ -169,6 +169,22 @@ func goPaySMSPaymentWorkflow(ctx workflow.Context, input GoPayPaymentWorkflowInp
 	}
 	result.SignupComplete = signup.GetSignupComplete()
 
+	if addBalance == nil {
+		setWorkflowProgress(ctx, progress, stepGoPayAppAddBalance)
+		selectedAddBalance, err := waitForGoPayAddBalanceSelection(ctx, retryCtx, input.GetJobId(), input.GetAddBalanceConfirmTimeoutSeconds())
+		if err != nil {
+			combined["add_balance"] = map[string]any{
+				"status":  "awaiting_selection",
+				"methods": goPayAddBalanceMethodOptions(),
+			}
+			return failGoPayPaymentWorkflow(ctx, retryCtx, result, input.GetJobId(), stepGoPayAppAddBalance, statusFailedRetryable, false, true, err, combined), nil
+		}
+		addBalance = selectedAddBalance
+		addBalanceMethod = goPayAddBalanceMethod(addBalance)
+		combined["add_balance_method"] = addBalanceMethod
+		result.AddBalanceMethod = addBalanceMethod
+	}
+
 	var balance GoPayAppAddBalanceOutput
 	setWorkflowProgress(ctx, progress, stepGoPayAppAddBalance)
 	addBalanceCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
@@ -189,7 +205,7 @@ func goPaySMSPaymentWorkflow(ctx workflow.Context, input GoPayPaymentWorkflowInp
 	combined["add_balance"] = protoDataMap(balance.GetData())
 	result.AddBalanceMethod = balance.GetMethod()
 	result.AddBalanceStatus = balance.GetStatus()
-	if goPayAddBalanceMethod(addBalance) == "manual_transfer" {
+	if balance.GetMethod() == "manual_transfer" {
 		setWorkflowProgress(ctx, progress, stepGoPayAppAddBalanceConfirm)
 		if err := waitForManualAddBalance(ctx, input.GetAddBalanceConfirmTimeoutSeconds()); err != nil {
 			combined["add_balance_confirmation"] = map[string]any{
@@ -408,6 +424,22 @@ func goPayWAPaymentWorkflow(ctx workflow.Context, input GoPayPaymentWorkflowInpu
 		return failGoPayPaymentWorkflow(ctx, retryCtx, result, input.GetJobId(), stepGoPayAppCreatePin, statusFailedRetryable, false, true, fmt.Errorf("gopay account token is not ready after create pin"), combined), nil
 	}
 
+	if addBalance == nil {
+		setWorkflowProgress(ctx, progress, stepGoPayAppAddBalance)
+		selectedAddBalance, err := waitForGoPayAddBalanceSelection(ctx, retryCtx, input.GetJobId(), input.GetAddBalanceConfirmTimeoutSeconds())
+		if err != nil {
+			combined["add_balance"] = map[string]any{
+				"status":  "awaiting_selection",
+				"methods": goPayAddBalanceMethodOptions(),
+			}
+			return failGoPayPaymentWorkflow(ctx, retryCtx, result, input.GetJobId(), stepGoPayAppAddBalance, statusFailedRetryable, false, true, err, combined), nil
+		}
+		addBalance = selectedAddBalance
+		addBalanceMethod = goPayAddBalanceMethod(addBalance)
+		combined["add_balance_method"] = addBalanceMethod
+		result.AddBalanceMethod = addBalanceMethod
+	}
+
 	var balance GoPayAppAddBalanceOutput
 	setWorkflowProgress(ctx, progress, stepGoPayAppAddBalance)
 	addBalanceCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
@@ -428,7 +460,7 @@ func goPayWAPaymentWorkflow(ctx workflow.Context, input GoPayPaymentWorkflowInpu
 	combined["add_balance"] = protoDataMap(balance.GetData())
 	result.AddBalanceMethod = balance.GetMethod()
 	result.AddBalanceStatus = balance.GetStatus()
-	if goPayAddBalanceMethod(addBalance) == "manual_transfer" {
+	if balance.GetMethod() == "manual_transfer" {
 		setWorkflowProgress(ctx, progress, stepGoPayAppAddBalanceConfirm)
 		if err := waitForManualAddBalance(ctx, input.GetAddBalanceConfirmTimeoutSeconds()); err != nil {
 			combined["add_balance_confirmation"] = map[string]any{

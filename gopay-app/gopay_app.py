@@ -17,7 +17,6 @@ GoPay 一号一Plus 步骤脚本
 环境变量：
   GOPAY_PROXY_POOL - GoPay 代理池，429 时按转轮轮换
   ORCHESTRATOR_URL - orchestrator gRPC 地址 (默认 127.0.0.1:50051)
-  GOPAY_SIGNUP_AUTH_UUID - signup Authorization Basic 使用的 UUID
 """
 
 import argparse
@@ -28,7 +27,6 @@ import re
 import sys
 import threading
 import time
-import uuid
 
 from gopay_client import (
     GopayClient,
@@ -38,6 +36,8 @@ from gopay_client import (
     generate_random_device_fingerprint,
 )
 from replay import LinkedAppUnlinkOptions, run_linked_app_unlink
+
+GOPAY_SIGNUP_AUTH_UUID = "bb648413-b637-443a-8ebf-176cf9b5dc32"
 
 GOPAY_API = "https://customer.gopayapi.com"
 GOPAY_CUSTOMER = GOPAY_API
@@ -230,8 +230,7 @@ def _auth_body(**extra) -> dict:
 
 
 def _signup_basic_authorization() -> str:
-    request_id = os.environ.get("GOPAY_SIGNUP_AUTH_UUID", "").strip() or str(uuid.uuid4())
-    return "Basic " + base64.b64encode(request_id.encode("utf-8")).decode("ascii")
+    return "Basic " + base64.b64encode(GOPAY_SIGNUP_AUTH_UUID.encode("utf-8")).decode("ascii")
 
 
 def new_logon_device_profile() -> dict:

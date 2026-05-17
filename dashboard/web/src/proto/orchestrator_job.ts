@@ -20,6 +20,22 @@ export interface CreateJobInput_ParamsEntry {
   value: string;
 }
 
+export interface JobStepStartInput {
+  job_id: string;
+  step_name: string;
+  recoverable: boolean;
+  retryable: boolean;
+  detail: { [key: string]: any } | undefined;
+}
+
+export interface JobStepCompleteInput {
+  job_id: string;
+  step_name: string;
+  recoverable: boolean;
+  retryable: boolean;
+  result: { [key: string]: any } | undefined;
+}
+
 export interface ResolveAccountInput {
   account_id: string;
   source_job_id: string;

@@ -500,6 +500,32 @@ func (s *MailboxStore) UpsertLatestOTP(ctx context.Context, email string, otp st
 	return err
 }
 
+func (s *MailboxStore) LatestOTP(ctx context.Context, email string, subjectKeyword string, issuedAfterUnix int64) (string, int64, bool, error) {
+	candidates := uniqueStrings([]string{email, canonicalEmail(email)})
+	for _, candidate := range candidates {
+		var row latestOTPRow
+		err := s.pool.QueryRow(ctx, `
+			SELECT email, otp, subject, received_at
+			FROM mailbox_latest_otps
+			WHERE email = $1
+		`, candidate).Scan(&row.Email, &row.OTP, &row.Subject, &row.ReceivedAtUnix)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return "", 0, false, err
+		}
+		if !containsFold(row.Subject, subjectKeyword) {
+			continue
+		}
+		if issuedAfterUnix > 0 && row.ReceivedAtUnix < issuedAfterUnix {
+			continue
+		}
+		return strings.TrimSpace(row.OTP), row.ReceivedAtUnix, strings.TrimSpace(row.OTP) != "", nil
+	}
+	return "", 0, false, nil
+}
+
 func (s *MailboxStore) attachLatestOTPs(ctx context.Context, mailboxes []*pb.EmailMailbox) error {
 	if len(mailboxes) == 0 {
 		return nil

@@ -20,9 +20,12 @@ const (
 	TaskQueueDefault = "nb-register-orchestrator"
 
 	CreateJobActivityName                        = "CreateJobActivity"
+	StartJobStepActivityName                     = "StartJobStepActivity"
+	CompleteJobStepActivityName                  = "CompleteJobStepActivity"
 	EnsureAccountActivityName                    = "EnsureAccountActivity"
 	ResolveAccountActivityName                   = "ResolveAccountFromJobActivity"
 	BrowserAuthStartActivityName                 = "BrowserAuthStartActivity"
+	BrowserAuthWaitActivityName                  = "BrowserAuthWaitActivity"
 	BrowserAuthCompleteActivityName              = "BrowserAuthCompleteActivity"
 	BrowserAuthCancelActivityName                = "BrowserAuthCancelActivity"
 	WaitOTPActivityName                          = "OTPWaitActivity"
@@ -64,9 +67,10 @@ const (
 	MarkJobFailedActivityName                    = "MarkJobFailedActivity"
 	MarkJobSucceededActivityName                 = "MarkJobSucceededActivity"
 
-	ManualOTPSignalName        = "manual_otp_available"
-	ManualAddBalanceSignalName = "manual_add_balance_confirmed"
-	WorkflowProgressQueryName  = "progress"
+	ManualOTPSignalName                = "manual_otp_available"
+	ManualAddBalanceSignalName         = "manual_add_balance_confirmed"
+	GoPayAddBalanceSelectionSignalName = "gopay_add_balance_selected"
+	WorkflowProgressQueryName          = "progress"
 )
 
 func WorkflowID(action string, jobID string) (string, bool) {

@@ -107,7 +107,6 @@ secrets:
     GOPAY_WA_PHONE_NUMBER: ""
     GOPAY_PIN: ""
     GOPAY_PROXY_POOL: ""
-    GOPAY_SIGNUP_AUTH_UUID: ""
     GOPAY_CHECKOUT_PROXY_URL: ""
     GOPAY_PAYMENT_PROXY_URL: ""
     GOPAY_ADD_BALANCE_ENVELOPE_LINK: ""
@@ -347,8 +346,6 @@ workloads:
         key: GOPAY_PHONE_NUMBER
       - name: GOPAY_PROXY_POOL
         key: GOPAY_PROXY_POOL
-      - name: GOPAY_SIGNUP_AUTH_UUID
-        key: GOPAY_SIGNUP_AUTH_UUID
       - name: GOPAY_HMAC_KEY
         key: GOPAY_HMAC_KEY
       - name: GOPAY_X_E2

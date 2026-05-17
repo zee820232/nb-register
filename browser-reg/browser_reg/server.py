@@ -2,8 +2,9 @@
 Stateless-facing gRPC Browser Registration Service.
 
 The service owns at most one in-flight browser flow. OTP is not fetched here:
-StartRegister pauses when the browser reaches the OTP page, the orchestrator
-waits for OTP elsewhere, then calls CompleteRegister with the code.
+StartRegister creates a browser flow and returns its flow_id immediately. The
+orchestrator waits on GetFlowStatus until the browser reaches OTP, then waits
+for OTP elsewhere and calls CompleteRegister with the code.
 """
 
 from __future__ import annotations
@@ -47,7 +48,10 @@ class BrowserFlow:
         self._lock = threading.Lock()
         self._otp = ""
         self.started_at_unix = 0
+        self.updated_at_unix = int(time.time())
         self.otp_issued_after_unix = 0
+        self.stage = "queued"
+        self.status_message = "browser flow queued"
         self.result: dict | None = None
         self.error: Exception | None = None
         self.thread = threading.Thread(target=self._run, name=f"browser-{mode}-{self.flow_id[:8]}", daemon=True)
@@ -62,9 +66,11 @@ class BrowserFlow:
 
     def start(self) -> None:
         self.started_at_unix = int(time.time())
+        self._set_status("starting", "starting browser flow")
         self.thread.start()
 
     def cancel(self) -> None:
+        self._set_status("cancelled", f"browser {self.mode} cancelled")
         self._cancel_event.set()
         self._otp_event.set()
 
@@ -91,12 +97,28 @@ class BrowserFlow:
     def _should_cancel(self) -> bool:
         return self._shutdown_event.is_set() or self._cancel_event.is_set()
 
+    def _set_status(self, stage: str, message: str = "") -> None:
+        stage = str(stage or "").strip().lower() or "running"
+        with self._lock:
+            self.stage = stage
+            self.status_message = str(message or stage).strip()
+            self.updated_at_unix = int(time.time())
+
+    def _mark_otp_request_click(self) -> int:
+        now = int(time.time())
+        with self._lock:
+            if self.otp_issued_after_unix <= 0:
+                self.otp_issued_after_unix = now
+            return self.otp_issued_after_unix
+
     def _wait_for_otp(self, timeout: int | None = None) -> str:
         del timeout
-        # Second OTP page just appeared → OpenAI just sent a new email.
-        # Filter out any earlier (now-invalid) codes.
-        self.otp_issued_after_unix = int(time.time())
+        # Prefer the timestamp captured immediately before clicking the action
+        # that triggers the email. Fall back here for older flows.
+        if self.otp_issued_after_unix <= 0:
+            self._mark_otp_request_click()
         self._otp_required_event.set()
+        self._set_status("waiting_for_otp", "waiting for orchestrator-supplied OTP")
         logger.info("[browser-reg] waiting orchestrator-supplied OTP flow=%s email=%s", self.flow_id, self.safe_email)
         while not self._otp_event.wait(0.25):
             if self._should_cancel():
@@ -111,14 +133,32 @@ class BrowserFlow:
         if not otp:
             raise RuntimeError("OTP is empty")
         logger.info("[browser-reg] received orchestrator-supplied OTP flow=%s", self.flow_id)
+        self._set_status("otp_received", "received orchestrator-supplied OTP")
         return otp
 
     def _on_status_change(self, status_str: str) -> None:
+        status = str(status_str or "").strip()
+        if status == "OTP_REQUEST_CLICK":
+            issued_after = self._mark_otp_request_click()
+            self._set_status("otp_request_click", "clicking OTP request action")
+            logger.info(
+                "[browser-reg] OTP request click flow=%s email=%s issued_after_unix=%s",
+                self.flow_id,
+                self.safe_email,
+                issued_after,
+            )
+            return
+        if status == "OTP_REQUEST_CLICKED":
+            self._set_status("otp_request_clicked", "OTP request action clicked")
+            return
+        if status:
+            self._set_status(status, status.lower().replace("_", " "))
         if status_str == "WAITING_FOR_OTP":
             logger.info("[browser-reg] browser reached OTP page flow=%s email=%s", self.flow_id, self.safe_email)
 
     def _run(self) -> None:
         try:
+            self._set_status("running", "browser flow running")
             if self.mode == "login":
                 self.result = browser_login(
                     email=self.email,
@@ -140,9 +180,14 @@ class BrowserFlow:
                     birthday=self.birthday,
                     should_cancel_fn=self._should_cancel,
                 )
+            self._set_status("succeeded", f"browser {self.mode} completed")
         except Exception as exc:
             logger.warning("[browser-reg] Flow failed flow=%s error=%s", self.flow_id, sanitize_text(exc))
             self.error = exc
+            if self._should_cancel():
+                self._set_status("cancelled", f"browser {self.mode} cancelled")
+            else:
+                self._set_status("failed", sanitize_text(exc)[:500])
         finally:
             self._done_event.set()
 
@@ -175,6 +220,20 @@ class BrowserRegistrationServicer(browser_pb2_grpc.BrowserRegistrationServicer):
         with self._lock:
             return self._flows.get(flow_id)
 
+    def _start_response_from_flow(self, flow: BrowserFlow) -> browser_pb2.StartRegisterResponse:
+        with flow._lock:
+            stage = flow.stage
+            status_message = flow.status_message
+        return browser_pb2.StartRegisterResponse(
+            success=True,
+            error_message="",
+            flow_id=flow.flow_id,
+            otp_required=flow.otp_required,
+            otp_issued_after_unix=flow.otp_issued_after_unix,
+            stage=stage,
+            status_message=status_message,
+        )
+
     @staticmethod
     def _register_response_from_flow(flow: BrowserFlow) -> browser_pb2.RegisterResponse:
         if not flow.done:
@@ -204,6 +263,34 @@ class BrowserRegistrationServicer(browser_pb2_grpc.BrowserRegistrationServicer):
             plus_trial_checked=bool(result.get("plus_trial_checked", False)),
         )
 
+    def _status_response_from_flow(self, flow: BrowserFlow) -> browser_pb2.BrowserFlowStatusResponse:
+        with flow._lock:
+            stage = flow.stage
+            status_message = flow.status_message
+            updated_at_unix = flow.updated_at_unix
+        result = self._register_response_from_flow(flow) if flow.done else None
+        success = bool(result and result.success)
+        error_message = ""
+        if result is not None and not result.success:
+            error_message = result.error_message
+        response = browser_pb2.BrowserFlowStatusResponse(
+            found=True,
+            flow_id=flow.flow_id,
+            mode=flow.mode,
+            stage=stage,
+            status_message=status_message,
+            otp_required=flow.otp_required,
+            done=flow.done,
+            success=success,
+            error_message=error_message,
+            started_at_unix=flow.started_at_unix,
+            updated_at_unix=updated_at_unix,
+            otp_issued_after_unix=flow.otp_issued_after_unix,
+        )
+        if result is not None:
+            response.result.CopyFrom(result)
+        return response
+
     def StartRegister(self, request, context):
         safe_email = redact_email(request.assigned_email)
         flow = self._new_flow(request, mode="register")
@@ -215,37 +302,27 @@ class BrowserRegistrationServicer(browser_pb2_grpc.BrowserRegistrationServicer):
 
         logger.info("[browser-reg] StartRegister job=%s flow=%s email=%s", request.job_id, flow.flow_id, safe_email)
         flow.start()
-        flow.wait_for_otp_required_or_done(context)
-
-        if flow.done:
-            response = self._register_response_from_flow(flow)
-            self._drop_flow(flow.flow_id)
-            return browser_pb2.StartRegisterResponse(
-                success=response.success,
-                error_message=response.error_message,
-                flow_id=flow.flow_id,
-                otp_required=False,
-                result=response,
-                otp_issued_after_unix=flow.otp_issued_after_unix,
-            )
-
         if not context.is_active():
             flow.cancel()
-            flow.join()
+            flow.join(timeout=2)
             self._drop_flow(flow.flow_id)
             return browser_pb2.StartRegisterResponse(
                 success=False,
                 error_message="browser registration cancelled",
                 flow_id=flow.flow_id,
             )
+        return self._start_response_from_flow(flow)
 
-        return browser_pb2.StartRegisterResponse(
-            success=True,
-            error_message="",
-            flow_id=flow.flow_id,
-            otp_required=True,
-            otp_issued_after_unix=flow.otp_issued_after_unix,
-        )
+    def GetFlowStatus(self, request, context):
+        del context
+        flow = self._get_flow(request.flow_id)
+        if flow is None:
+            return browser_pb2.BrowserFlowStatusResponse(
+                found=False,
+                flow_id=request.flow_id,
+                error_message="browser flow not found",
+            )
+        return self._status_response_from_flow(flow)
 
     def CompleteRegister(self, request, context):
         flow = self._get_flow(request.flow_id)
@@ -290,37 +367,17 @@ class BrowserRegistrationServicer(browser_pb2_grpc.BrowserRegistrationServicer):
 
         logger.info("[browser-reg] StartLogin job=%s flow=%s email=%s", request.job_id, flow.flow_id, safe_email)
         flow.start()
-        flow.wait_for_otp_required_or_done(context)
-
-        if flow.done:
-            response = self._register_response_from_flow(flow)
-            self._drop_flow(flow.flow_id)
-            return browser_pb2.StartRegisterResponse(
-                success=response.success,
-                error_message=response.error_message,
-                flow_id=flow.flow_id,
-                otp_required=False,
-                result=response,
-                otp_issued_after_unix=flow.otp_issued_after_unix,
-            )
-
         if not context.is_active():
             flow.cancel()
-            flow.join()
+            flow.join(timeout=2)
             self._drop_flow(flow.flow_id)
             return browser_pb2.StartRegisterResponse(
                 success=False,
                 error_message="browser login cancelled",
                 flow_id=flow.flow_id,
             )
+        return self._start_response_from_flow(flow)
 
-        return browser_pb2.StartRegisterResponse(
-            success=True,
-            error_message="",
-            flow_id=flow.flow_id,
-            otp_required=True,
-            otp_issued_after_unix=flow.otp_issued_after_unix,
-        )
 
     def CompleteLogin(self, request, context):
         flow = self._get_flow(request.flow_id)

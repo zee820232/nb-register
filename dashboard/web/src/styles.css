@@ -1605,6 +1605,12 @@ tbody tr:hover, tr.selected { background: #f4f8ff; }
   font-weight: 650;
 }
 
+.addBalanceChoiceList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .transferBox {
   min-width: 0;
   display: grid;

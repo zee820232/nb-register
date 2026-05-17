@@ -84,6 +84,25 @@ export interface BrowserAuthCompleteInput {
   otp_source: string;
 }
 
+export interface BrowserAuthWaitInput {
+  job_id: string;
+  account_id: string;
+  flow_id: string;
+  mode: string;
+  email: string;
+}
+
+export interface BrowserAuthWaitOutput {
+  account_id: string;
+  flow_id: string;
+  email: string;
+  otp_required: boolean;
+  otp_issued_after_unix: number;
+  otp_timeout_seconds: number;
+  result: RegisterActivityOutput | undefined;
+  data: { [key: string]: any } | undefined;
+}
+
 export interface BrowserAuthCancelInput {
   flow_id: string;
   mode: string;

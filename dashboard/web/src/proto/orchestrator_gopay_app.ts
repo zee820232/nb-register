@@ -118,10 +118,12 @@ export interface GoPayRekberinajaAddBalance {
 
 export interface ManualAddBalanceSignal {
   kind: string;
+  add_balance: GoPayAddBalance | undefined;
 }
 
 export interface ConfirmManualAddBalanceRequest {
   job_id: string;
+  add_balance: GoPayAddBalance | undefined;
 }
 
 export interface ConfirmManualAddBalanceResponse {

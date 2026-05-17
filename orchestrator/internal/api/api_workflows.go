@@ -171,9 +171,7 @@ func (s *Server) RunGoPayPayment(ctx context.Context, req *pb.GoPayPaymentReques
 		otpChannel = "sms"
 	}
 	addBalance := cloneGoPayAddBalance(req.GetAddBalance())
-	if addBalance == nil {
-		addBalance = cloneGoPayAddBalance(s.defaultGoPayAddBalance)
-	} else {
+	if addBalance != nil {
 		addBalance = s.mergeDefaultGoPayAddBalance(addBalance)
 	}
 	addBalanceConfirmTimeoutSeconds := req.GetAddBalanceConfirmTimeoutSeconds()
@@ -239,6 +237,16 @@ func (s *Server) ConfirmManualAddBalance(ctx context.Context, req *pb.ConfirmMan
 	workflowID, ok := contracts.WorkflowID(job.Action, job.ID)
 	if !ok || workflowID == "" {
 		return &pb.ConfirmManualAddBalanceResponse{Success: false, JobId: jobID, ErrorMessage: "workflow id not found"}, nil
+	}
+	if req.GetAddBalance() != nil {
+		addBalance := s.mergeDefaultGoPayAddBalance(cloneGoPayAddBalance(req.GetAddBalance()))
+		if goPayAddBalanceMethod(addBalance) == "" {
+			return &pb.ConfirmManualAddBalanceResponse{Success: false, JobId: jobID, ErrorMessage: "add_balance method is required"}, nil
+		}
+		if err := s.temporal.SignalWorkflow(ctx, workflowID, "", contracts.GoPayAddBalanceSelectionSignalName, ManualAddBalanceSignal{Kind: "select", AddBalance: addBalance}); err != nil {
+			return &pb.ConfirmManualAddBalanceResponse{Success: false, JobId: jobID, ErrorMessage: err.Error()}, nil
+		}
+		return &pb.ConfirmManualAddBalanceResponse{Success: true, JobId: jobID}, nil
 	}
 	if err := s.temporal.SignalWorkflow(ctx, workflowID, "", manualAddBalanceSignalName, ManualAddBalanceSignal{Kind: "manual_transfer_confirmed"}); err != nil {
 		return &pb.ConfirmManualAddBalanceResponse{Success: false, JobId: jobID, ErrorMessage: err.Error()}, nil

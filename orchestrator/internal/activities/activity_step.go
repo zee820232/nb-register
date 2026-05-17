@@ -2,6 +2,8 @@ package activities
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -27,6 +29,38 @@ func (s *Server) startActivityStep(ctx context.Context, jobID, stepName string, 
 		return activityStep{}, err
 	}
 	return step, nil
+}
+
+func (s *Server) StartJobStepActivity(ctx context.Context, input JobStepStartInput) error {
+	jobID := strings.TrimSpace(input.GetJobId())
+	stepName := strings.TrimSpace(input.GetStepName())
+	if jobID == "" {
+		return fmt.Errorf("job_id is required")
+	}
+	if stepName == "" {
+		return fmt.Errorf("step_name is required")
+	}
+	step, err := s.startActivityStep(ctx, jobID, stepName, input.GetRecoverable(), input.GetRetryable())
+	if err != nil {
+		return err
+	}
+	if detail := protoDataMap(input.GetDetail()); len(detail) > 0 {
+		step.update(detail)
+	}
+	return nil
+}
+
+func (s *Server) CompleteJobStepActivity(ctx context.Context, input JobStepCompleteInput) error {
+	jobID := strings.TrimSpace(input.GetJobId())
+	stepName := strings.TrimSpace(input.GetStepName())
+	if jobID == "" {
+		return fmt.Errorf("job_id is required")
+	}
+	if stepName == "" {
+		return fmt.Errorf("step_name is required")
+	}
+	step := s.activityStep(ctx, jobID, stepName, input.GetRecoverable(), input.GetRetryable())
+	return step.complete(protoDataMap(input.GetResult()), nil)
 }
 
 func (s *Server) activityStep(ctx context.Context, jobID, stepName string, recoverable bool, retryable bool) activityStep {

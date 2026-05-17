@@ -549,8 +549,11 @@ def browser_login(
                 raise RuntimeError("login password input not found")
             for sel in ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Next")']:
                 b = query_selector(sel)
-                if b and b.is_visible() and safe_click(b, "Login password continue"):
-                    break
+                if b and b.is_visible():
+                    on_status_change_fn("OTP_REQUEST_CLICK")
+                    if safe_click(b, "Login password continue"):
+                        on_status_change_fn("OTP_REQUEST_CLICKED")
+                        break
 
             for i in range(120):
                 sleep(1)

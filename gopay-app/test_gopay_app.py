@@ -1276,13 +1276,12 @@ class SignupFlowTests(unittest.TestCase):
         self.assertEqual(gopay_app._choose_method(methods, "wa"), "otp_wa")
         self.assertEqual(gopay_app._choose_method(["otp_wa"], "sms"), "")
 
-    def test_signup_basic_authorization_uses_env_uuid(self):
-        request_id = "87654321-4321-6789-4321-678987654321"
-        expected = "Basic " + base64.b64encode(request_id.encode("utf-8")).decode("ascii")
+    def test_signup_basic_authorization_uses_fixed_uuid(self):
+        expected = "Basic " + base64.b64encode(
+            gopay_app.GOPAY_SIGNUP_AUTH_UUID.encode("utf-8")
+        ).decode("ascii")
 
-        with patch.dict(gopay_app.os.environ, {"GOPAY_SIGNUP_AUTH_UUID": request_id}, clear=False), \
-                patch.object(gopay_app.uuid, "uuid4", side_effect=AssertionError("uuid4 should not be called")):
-            self.assertEqual(gopay_app._signup_basic_authorization(), expected)
+        self.assertEqual(gopay_app._signup_basic_authorization(), expected)
 
     def test_start_signup_uses_signup_cvs_flow(self):
         state = {}
@@ -1412,13 +1411,7 @@ class SignupFlowTests(unittest.TestCase):
 
         with patch.object(gopay_app, "save_state", lambda target: None), \
                 patch.object(gopay_app, "GopayClient", FakeClient), \
-                patch.object(gopay_app, "ensure_access_token", fake_refresh), \
-                patch.dict(gopay_app.os.environ, {"GOPAY_SIGNUP_AUTH_UUID": ""}, clear=False), \
-                patch.object(
-                    gopay_app.uuid,
-                    "uuid4",
-                    return_value=gopay_app.uuid.UUID("12345678-1234-5678-1234-567812345678"),
-                ):
+                patch.object(gopay_app, "ensure_access_token", fake_refresh):
             result = gopay_app.complete_signup(state, "1234")
 
         self.assertTrue(result["success"])
@@ -1431,7 +1424,7 @@ class SignupFlowTests(unittest.TestCase):
         self.assertEqual(
             signup_call[2]["extra_headers"],
             {
-                "Authorization": "Basic MTIzNDU2NzgtMTIzNC01Njc4LTEyMzQtNTY3ODEyMzQ1Njc4",
+                "Authorization": gopay_app._signup_basic_authorization(),
                 "Verification-Token": "Bearer verification-token",
             },
         )
@@ -1920,6 +1913,67 @@ class ChangePhoneActivityFlowTests(unittest.TestCase):
         patch_bodies = [call[2] for call in calls if call[0] == "patch"]
         self.assertEqual(patch_bodies[0]["name"], "Current Name")
         self.assertEqual(patch_bodies[0]["email"], "current@example.test")
+
+    @unittest.skipIf(app_server is None, f"app_server import failed: {APP_SERVER_IMPORT_ERROR}")
+    def test_change_phone_start_generates_profile_email_when_current_profile_has_none(self):
+        state = {
+            "stage": "ready",
+            "token": jwt_with_exp(int(time.time()) + 3600),
+            "name": "gg",
+            "device": {},
+        }
+        patch_bodies = []
+
+        class FakeClient:
+            def __init__(self, token, proxy=None, device=None):
+                self.token = token
+
+            def get(self, url, **kwargs):
+                if url.endswith("/gojek/v2/customer"):
+                    return {
+                        "status": 200,
+                        "data": {
+                            "customer": {
+                                "name": "Current Name",
+                                "phone": TEST_E164_PHONE,
+                            },
+                        },
+                    }
+                raise AssertionError(f"unexpected get {url}")
+
+            def patch(self, url, body=None, extra_headers=None, **kwargs):
+                patch_bodies.append(body)
+                if not extra_headers:
+                    return {"status": 461, "data": {"errors": [{"code": "CO:CUST:pin_verification"}]}}
+                return {
+                    "status": 200,
+                    "data": {
+                        "code": "CO:CUST:sms_verification",
+                        "otp_token": "otp-token",
+                        "expires_in": 300,
+                    },
+                }
+
+        def fake_load_state():
+            return dict(state)
+
+        def fake_save_state(next_state):
+            state.clear()
+            state.update(next_state)
+
+        with patch.object(app_server, "load_state", fake_load_state), \
+                patch.object(app_server, "save_state", fake_save_state), \
+                patch.object(app_server, "GopayClient", FakeClient), \
+                patch.object(app_server, "ensure_access_token", lambda target: {"success": True}), \
+                patch.object(app_server, "access_token_usable", lambda target, min_ttl=30: True):
+            resp = app_server.GopayAppServicer().ChangePhoneStart(
+                app_server.gopay_app_pb2.ChangePhoneStartRequest(pin=TEST_PIN, new_phone=TEST_CHANGE_FULL_PHONE),
+                None,
+            )
+
+        self.assertTrue(resp.success)
+        self.assertEqual(state["email"], f"gopay62{TEST_CHANGE_LOCAL_PHONE}@gmail.com")
+        self.assertEqual(patch_bodies[0]["email"], state["email"])
 
     @unittest.skipIf(app_server is None, f"app_server import failed: {APP_SERVER_IMPORT_ERROR}")
     def test_change_phone_retry_uses_activity_otp_retry(self):

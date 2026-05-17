@@ -33,6 +33,8 @@ message StartRegisterResponse {
   bool otp_required = 4;
   RegisterResponse result = 5;
   int64 otp_issued_after_unix = 6;
+  string stage = 7;
+  string status_message = 8;
 }
 
 message CompleteRegisterRequest {
@@ -49,8 +51,29 @@ message CancelRegisterResponse {
   string error_message = 2;
 }
 
+message BrowserFlowStatusRequest {
+  string flow_id = 1;
+}
+
+message BrowserFlowStatusResponse {
+  bool found = 1;
+  string flow_id = 2;
+  string mode = 3;
+  string stage = 4;
+  string status_message = 5;
+  bool otp_required = 6;
+  bool done = 7;
+  bool success = 8;
+  string error_message = 9;
+  int64 started_at_unix = 10;
+  int64 updated_at_unix = 11;
+  int64 otp_issued_after_unix = 12;
+  RegisterResponse result = 13;
+}
+
 service BrowserRegistration {
   rpc StartRegister(RegisterRequest) returns (StartRegisterResponse);
+  rpc GetFlowStatus(BrowserFlowStatusRequest) returns (BrowserFlowStatusResponse);
   rpc CompleteRegister(CompleteRegisterRequest) returns (RegisterResponse);
   rpc CancelRegister(CancelRegisterRequest) returns (CancelRegisterResponse);
   rpc StartLogin(RegisterRequest) returns (StartRegisterResponse);

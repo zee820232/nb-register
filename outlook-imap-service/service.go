@@ -136,16 +136,29 @@ func (s *EmailService) WaitForEmail(ctx context.Context, request *pb.WaitForEmai
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = 300
 	}
+	email := request.GetEmailAddress()
+	issuedAfterUnix := request.GetIssuedAfterUnix()
+	logInfo("waiting for email otp email=%s timeout_seconds=%d issued_after_unix=%d", redactEmail(email), timeoutSeconds, issuedAfterUnix)
 	issuedAfter := float64(request.GetIssuedAfterUnix())
-	if otp, ok := s.watcher.ConsumeCachedOTP(request.GetEmailAddress(), request.GetSubjectKeyword(), issuedAfter); ok {
+	if otp, ok := s.watcher.ConsumeCachedOTP(email, request.GetSubjectKeyword(), issuedAfter); ok {
 		return &pb.WaitForEmailResponse{Found: true, ContentExtracted: otp}, nil
 	}
-	if err := s.watcher.PollForEmail(ctx, request.GetEmailAddress()); err != nil {
+	if resp, ok, err := s.latestOTPResponse(ctx, request, issuedAfterUnix); err != nil {
+		return nil, waitError(ctx, err)
+	} else if ok {
+		return resp, nil
+	}
+	if err := s.watcher.PollForEmail(ctx, email); err != nil {
 		if !isAuthError(err) {
 			return nil, waitError(ctx, err)
 		}
-	} else if otp, ok := s.watcher.ConsumeCachedOTP(request.GetEmailAddress(), request.GetSubjectKeyword(), issuedAfter); ok {
+		logWarning("email otp poll auth error email=%s error=%v", redactEmail(email), err)
+	} else if otp, ok := s.watcher.ConsumeCachedOTP(email, request.GetSubjectKeyword(), issuedAfter); ok {
 		return &pb.WaitForEmailResponse{Found: true, ContentExtracted: otp}, nil
+	} else if resp, ok, err := s.latestOTPResponse(ctx, request, issuedAfterUnix); err != nil {
+		return nil, waitError(ctx, err)
+	} else if ok {
+		return resp, nil
 	}
 
 	deadline := time.Now().Add(time.Duration(timeoutSeconds) * time.Second)
@@ -163,17 +176,32 @@ func (s *EmailService) WaitForEmail(ctx context.Context, request *pb.WaitForEmai
 			case <-timer.C:
 			}
 		}
-		if err := s.watcher.PollForEmail(ctx, request.GetEmailAddress()); err != nil {
+		if err := s.watcher.PollForEmail(ctx, email); err != nil {
 			if !isAuthError(err) {
 				return nil, waitError(ctx, err)
 			}
 			continue
 		}
-		if otp, ok := s.watcher.ConsumeCachedOTP(request.GetEmailAddress(), request.GetSubjectKeyword(), issuedAfter); ok {
+		if otp, ok := s.watcher.ConsumeCachedOTP(email, request.GetSubjectKeyword(), issuedAfter); ok {
 			return &pb.WaitForEmailResponse{Found: true, ContentExtracted: otp}, nil
 		}
+		if resp, ok, err := s.latestOTPResponse(ctx, request, issuedAfterUnix); err != nil {
+			return nil, waitError(ctx, err)
+		} else if ok {
+			return resp, nil
+		}
 	}
+	logInfo("email otp not found email=%s timeout_seconds=%d issued_after_unix=%d", redactEmail(email), timeoutSeconds, issuedAfterUnix)
 	return &pb.WaitForEmailResponse{Found: false}, nil
+}
+
+func (s *EmailService) latestOTPResponse(ctx context.Context, request *pb.WaitForEmailRequest, issuedAfterUnix int64) (*pb.WaitForEmailResponse, bool, error) {
+	otp, receivedAt, ok, err := s.store.LatestOTP(ctx, request.GetEmailAddress(), request.GetSubjectKeyword(), issuedAfterUnix)
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	logInfo("served persisted latest OTP for %s received_at_unix=%d", redactEmail(request.GetEmailAddress()), receivedAt)
+	return &pb.WaitForEmailResponse{Found: true, ContentExtracted: otp}, true, nil
 }
 
 func waitError(ctx context.Context, err error) error {

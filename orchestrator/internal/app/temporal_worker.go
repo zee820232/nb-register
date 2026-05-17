@@ -22,9 +22,12 @@ func registerTemporalWorker(w worker.Worker, s *activities.Server) {
 	w.RegisterWorkflow(workflows.MailboxOAuthWorkflow)
 
 	w.RegisterActivityWithOptions(s.CreateJobActivity, activity.RegisterOptions{Name: createJobActivityName})
+	w.RegisterActivityWithOptions(s.StartJobStepActivity, activity.RegisterOptions{Name: startJobStepActivityName})
+	w.RegisterActivityWithOptions(s.CompleteJobStepActivity, activity.RegisterOptions{Name: completeJobStepActivityName})
 	w.RegisterActivityWithOptions(s.EnsureAccountActivity, activity.RegisterOptions{Name: ensureAccountActivityName})
 	w.RegisterActivityWithOptions(s.ResolveAccountFromJobActivity, activity.RegisterOptions{Name: resolveAccountActivityName})
 	w.RegisterActivityWithOptions(s.BrowserAuthStartActivity, activity.RegisterOptions{Name: browserAuthStartActivityName})
+	w.RegisterActivityWithOptions(s.BrowserAuthWaitActivity, activity.RegisterOptions{Name: browserAuthWaitActivityName})
 	w.RegisterActivityWithOptions(s.BrowserAuthCompleteActivity, activity.RegisterOptions{Name: browserAuthCompleteActivityName})
 	w.RegisterActivityWithOptions(s.BrowserAuthCancelActivity, activity.RegisterOptions{Name: browserAuthCancelActivityName})
 	w.RegisterActivityWithOptions(s.OTPWaitActivity, activity.RegisterOptions{Name: waitOTPActivityName})

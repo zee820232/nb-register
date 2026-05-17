@@ -21,7 +21,31 @@ func browserStartData(resp *pb.StartRegisterResponse) map[string]any {
 		"flow_id":          resp.GetFlowId(),
 		"otp_required":     resp.GetOtpRequired(),
 		"otp_issued_after": resp.GetOtpIssuedAfterUnix(),
+		"stage":            resp.GetStage(),
+		"status_message":   resp.GetStatusMessage(),
 		"result":           registerResultData(resp.GetResult()),
+	}
+}
+
+func browserStatusData(resp *pb.BrowserFlowStatusResponse) map[string]any {
+	if resp == nil {
+		return map[string]any{"response_present": false}
+	}
+	return map[string]any{
+		"response_present":      true,
+		"found":                 resp.GetFound(),
+		"flow_id":               resp.GetFlowId(),
+		"mode":                  resp.GetMode(),
+		"stage":                 resp.GetStage(),
+		"status_message":        resp.GetStatusMessage(),
+		"otp_required":          resp.GetOtpRequired(),
+		"done":                  resp.GetDone(),
+		"success":               resp.GetSuccess(),
+		"error_message":         resp.GetErrorMessage(),
+		"started_at_unix":       resp.GetStartedAtUnix(),
+		"updated_at_unix":       resp.GetUpdatedAtUnix(),
+		"otp_issued_after_unix": resp.GetOtpIssuedAfterUnix(),
+		"result":                registerResultData(resp.GetResult()),
 	}
 }
 

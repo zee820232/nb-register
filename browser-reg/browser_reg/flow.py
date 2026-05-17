@@ -419,6 +419,12 @@ def browser_register(
     def sleep(seconds: float) -> None:
         _interruptible_sleep(float(seconds), check_cancel)
 
+    def emit_status(stage: str) -> None:
+        try:
+            on_status_change_fn(stage)
+        except Exception as e:
+            logger.info("[browser-reg] status callback failed: %s", sanitize_text(e))
+
     ctx = None
     page = None
 
@@ -671,6 +677,76 @@ def browser_register(
         sleep(random.uniform(0.2, 0.5))
         return _click_email_continue(label)
 
+    def _dismiss_page_obstructions() -> None:
+        try:
+            _page_evaluate('''() => {
+                const visible = (el) => {
+                    const rect = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    return rect.width > 0
+                        && rect.height > 0
+                        && style.visibility !== 'hidden'
+                        && style.display !== 'none';
+                };
+                const patterns = [
+                    /reject non-essential/i,
+                    /accept all/i,
+                    /^close$/i,
+                    /dismiss/i
+                ];
+                for (const el of document.querySelectorAll('button, a, div[role="button"]')) {
+                    const label = [
+                        el.innerText || '',
+                        el.textContent || '',
+                        el.getAttribute('aria-label') || '',
+                        el.value || ''
+                    ].join(' ').trim();
+                    if (visible(el) && patterns.some((pattern) => pattern.test(label))) {
+                        el.click();
+                    }
+                }
+            }''')
+        except Exception as e:
+            logger.info("[browser-reg] overlay dismiss failed: %s", sanitize_text(e))
+
+    def _click_visible_signup() -> str:
+        try:
+            clicked = _page_evaluate('''() => {
+                const visible = (el) => {
+                    const rect = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    return rect.width > 0
+                        && rect.height > 0
+                        && style.visibility !== 'hidden'
+                        && style.display !== 'none';
+                };
+                const candidates = Array.from(document.querySelectorAll('button, a, div[role="button"]'))
+                    .map((el) => {
+                        const rect = el.getBoundingClientRect();
+                        const text = (el.innerText || el.textContent || el.value || '').trim();
+                        return {el, rect, text};
+                    })
+                    .filter(({el, text}) => {
+                        const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
+                        return !disabled && visible(el) && /sign\\s*up/i.test(text);
+                    })
+                    .sort((a, b) => {
+                        const aExact = /^sign\\s*up$/i.test(a.text) ? 0 : 1;
+                        const bExact = /^sign\\s*up$/i.test(b.text) ? 0 : 1;
+                        if (aExact !== bExact) return aExact - bExact;
+                        if (Math.abs(a.rect.top - b.rect.top) > 4) return a.rect.top - b.rect.top;
+                        return b.rect.left - a.rect.left;
+                    });
+                const target = candidates[0];
+                if (!target) return '';
+                target.el.click();
+                return target.text;
+            }''')
+            return str(clicked or "").strip()
+        except Exception as e:
+            logger.info("[browser-reg] visible Sign up click failed: %s", sanitize_text(e))
+            return ""
+
     try:
         import platform as _platform
         _debug_mode = _env_bool("BROWSER_REG_DEBUG", False)
@@ -773,8 +849,10 @@ def browser_register(
                 return bool(result["access_token"])
 
             # --- [1] Open ChatGPT homepage, click "Sign up" ---
+            emit_status("OPENING_CHATGPT")
             logger.info("[browser-reg] Opening chatgpt.com ...")
             _with_active_page(lambda p: p.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=60000))
+            _dismiss_page_obstructions()
             try:
                 _wait_for_selector(
                     'button[data-testid="signup-button"], a[data-testid="signup-button"]',
@@ -785,38 +863,45 @@ def browser_register(
             sleep(0.5)
 
             clicked_signup = False
-            for sel in [
-                'a[data-testid="signup-button"]',
-                'button[data-testid="signup-button"]',
-                'button:has-text("Sign up for free")',
-                'a:has-text("Sign up for free")',
-                'button:has-text("Sign up")',
-                'a:has-text("Sign up")',
-            ]:
-                try:
-                    btns = _query_selector_all(sel)
-                except Exception:
-                    continue
-                for btn in btns:
+            clicked_text = _click_visible_signup()
+            if clicked_text:
+                clicked_signup = True
+                emit_status("SIGNUP_CLICKED")
+                logger.info("[browser-reg] Clicked Sign up (visible): %s", clicked_text[:40])
+            else:
+                for sel in [
+                    'button:has-text("Sign up")',
+                    'a:has-text("Sign up")',
+                    'a[data-testid="signup-button"]',
+                    'button[data-testid="signup-button"]',
+                    'button:has-text("Sign up for free")',
+                    'a:has-text("Sign up for free")',
+                ]:
                     try:
-                        if not btn.is_visible():
-                            continue
-                        text = btn.inner_text().lower()
-                        if "sign up" not in text:
-                            continue
+                        btns = _query_selector_all(sel)
+                    except Exception:
+                        continue
+                    for btn in btns:
                         try:
-                            btn.click(timeout=5000)
-                        except Exception:
-                            btn.evaluate("el => el.click()")
-                        clicked_signup = True
-                        logger.info(f"[browser-reg] Clicked Sign up ({sel}): {text[:40]}")
+                            if not btn.is_visible():
+                                continue
+                            text = btn.inner_text().lower()
+                            if "sign up" not in text:
+                                continue
+                            try:
+                                btn.click(timeout=5000)
+                            except Exception:
+                                btn.evaluate("el => el.click()")
+                            clicked_signup = True
+                            emit_status("SIGNUP_CLICKED")
+                            logger.info(f"[browser-reg] Clicked Sign up ({sel}): {text[:40]}")
+                            break
+                        except Exception as e:
+                            if "attached to the DOM" in str(e) or "detached" in str(e).lower():
+                                continue
+                            logger.warning(f"[browser-reg] Click error: {sanitize_text(e)}")
+                    if clicked_signup:
                         break
-                    except Exception as e:
-                        if "attached to the DOM" in str(e) or "detached" in str(e).lower():
-                            continue
-                        logger.warning(f"[browser-reg] Click error: {sanitize_text(e)}")
-                if clicked_signup:
-                    break
 
             if not clicked_signup:
                 _page_screenshot(path=f"{screenshot_dir}/no_signup.png")
@@ -847,17 +932,18 @@ def browser_register(
                     raise
                 if i == 5 and cur_url == pre_url:
                     logger.info("[browser-reg] Sign up click had no effect, retrying")
-                    try:
-                        btn = _query_selector(
-                            'button[data-testid="signup-button"], a[data-testid="signup-button"]'
-                        )
-                        if btn:
-                            btn.click(timeout=3000)
-                    except Exception:
-                        pass
+                    _dismiss_page_obstructions()
+                    clicked_text = _click_visible_signup()
+                    if clicked_text:
+                        emit_status("SIGNUP_CLICKED")
+                        logger.info("[browser-reg] Retried Sign up (visible): %s", clicked_text[:40])
             logger.info(f"[browser-reg] URL: {sanitize_url_for_log(_page_url())}")
+            if "auth.openai.com" not in _page_url() and not _find_email_input():
+                _page_screenshot(path=f"{screenshot_dir}/signup_click_no_redirect.png")
+                raise RuntimeError(f"Sign up click did not reach auth page, URL={sanitize_url_for_log(_page_url())}")
 
             # --- [2] Fill email ---
+            emit_status("EMAIL_ENTRY")
             logger.info("[browser-reg] Filling email ...")
             try:
                 _wait_for_selector(email_entry_selector, state="visible", timeout=30000)
@@ -866,18 +952,21 @@ def browser_register(
             if not _submit_email_entry("Email continue"):
                 _page_screenshot(path=f"{screenshot_dir}/email_entry_missing.png")
                 raise RuntimeError("Email input not found or could not be submitted")
+            emit_status("EMAIL_SUBMITTED")
             sleep(0.5)
 
             # --- [3] Email-verification page → switch to password flow ---
             # 2026 flow: after email submit on chatgpt.com, it redirects to
             # auth.openai.com/email-verification with OTP input + "Continue with password" button.
             # We click "Continue with password" to skip first OTP.
+            emit_status("AUTH_REDIRECT_WAIT")
             logger.info("[browser-reg] Waiting for auth.openai.com redirect ...")
             try:
                 _with_active_page(lambda p: p.wait_for_url("**/auth.openai.com/**", timeout=30000))
             except Exception:
                 pass
             logger.info(f"[browser-reg] Reached auth page: {sanitize_url_for_log(_page_url())}")
+            emit_status("AUTH_PAGE")
 
             def _password_input_ready() -> bool:
                 try:
@@ -965,6 +1054,7 @@ def browser_register(
                         break
                     if _click_password_flow():
                         switched_to_password = True
+                        emit_status("PASSWORD_FLOW_SELECTED")
                         break
                     if email_resubmits < 2 and _find_email_input():
                         email_resubmits += 1
@@ -995,6 +1085,7 @@ def browser_register(
                     raise RuntimeError("Password input did not appear after Continue with password")
 
             # --- [4] Set password ---
+            emit_status("PASSWORD_ENTRY")
             logger.info("[browser-reg] Waiting for password field ...")
             try:
                 if not _password_input_ready():
@@ -1013,10 +1104,13 @@ def browser_register(
                 ]:
                     b = _query_selector(sel)
                     if b and b.is_visible():
+                        emit_status("OTP_REQUEST_CLICK")
                         b.click()
+                        emit_status("OTP_REQUEST_CLICKED")
                         logger.info(f"[browser-reg] Password continue: {sel}")
                         break
                 logger.info("[browser-reg] Password set successfully")
+                emit_status("PASSWORD_SUBMITTED")
             except Exception as e:
                 logger.warning(f"[browser-reg] Password field not found: {sanitize_text(e)}")
                 _page_screenshot(path=f"{screenshot_dir}/no_password.png")
@@ -1076,7 +1170,7 @@ def browser_register(
 
             if _find_otp_input() or _is_email_code_page():
                 logger.info("[browser-reg] Waiting for second OTP ...")
-                on_status_change_fn("WAITING_FOR_OTP")
+                emit_status("WAITING_FOR_OTP")
                 otp_code = None
 
                 # The browser service must not own OTP timeout policy. The
@@ -1144,6 +1238,7 @@ def browser_register(
             sleep(1)
 
             # --- [6] /about-you: Full name + Birthday ---
+            emit_status("ABOUT_YOU_WAIT")
             logger.info(f"[browser-reg] Post-OTP URL: {sanitize_url_for_log(_page_url())}")
 
             for _ in range(30):
@@ -1234,6 +1329,7 @@ def browser_register(
                 legacy_age = str(random.randint(26, 40))
 
                 logger.info("[browser-reg] About-you fields prepared")
+                emit_status("ABOUT_YOU")
                 try:
                     full_name_input.focus()
                     sleep(0.3)
@@ -1278,6 +1374,7 @@ def browser_register(
                 logger.warning(f"[browser-reg] No about-you form found, URL={sanitize_url_for_log(_page_url())}")
 
             # --- [7] Wait for redirect back to chatgpt.com ---
+            emit_status("SESSION_CAPTURE")
             logger.info("[browser-reg] Waiting for redirect to chatgpt.com ...")
             arrived = False
             last_url = ""

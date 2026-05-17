@@ -118,6 +118,71 @@ func waitForOTP(ctx workflow.Context, input OTPWaitInput) (OTPWaitOutput, error)
 	}
 }
 
+func waitForOTPInStep(ctx workflow.Context, activityCtx workflow.Context, stepName string, input OTPWaitInput) (OTPWaitOutput, error) {
+	input.StepName = stepName
+	if err := workflow.ExecuteActivity(activityCtx, startJobStepActivityName, JobStepStartInput{
+		JobId:       input.GetJobId(),
+		StepName:    stepName,
+		Recoverable: false,
+		Retryable:   true,
+		Detail:      protoData(otpWaitStepData(input)),
+	}).Get(ctx, nil); err != nil {
+		return OTPWaitOutput{}, err
+	}
+
+	out, err := waitForOTP(ctx, input)
+	if err != nil {
+		return out, err
+	}
+	if err := workflow.ExecuteActivity(activityCtx, completeJobStepActivityName, JobStepCompleteInput{
+		JobId:       input.GetJobId(),
+		StepName:    stepName,
+		Recoverable: false,
+		Retryable:   true,
+		Result:      protoData(otpWaitStepResultData(input, out)),
+	}).Get(ctx, nil); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func otpWaitStepData(input OTPWaitInput) map[string]any {
+	data := map[string]any{
+		"channel":           otpWaitInputChannel(input),
+		"timeout_seconds":   input.GetTimeoutSeconds(),
+		"issued_after_unix": input.GetIssuedAfterUnix(),
+	}
+	if target := input.GetEmail(); target != nil {
+		data["email"] = target.GetEmail()
+	}
+	if target := input.GetPayment(); target != nil {
+		data["payment_source"] = target.GetSource()
+		data["payment_purpose"] = target.GetPurpose()
+	}
+	if target := input.GetSms(); target != nil {
+		data["activation_id"] = target.GetActivationId()
+	}
+	return data
+}
+
+func otpWaitStepResultData(input OTPWaitInput, output OTPWaitOutput) map[string]any {
+	data := otpWaitStepData(input)
+	for key, value := range protoDataMap(output.GetData()) {
+		data[key] = value
+	}
+	data["found"] = output.GetFound()
+	if source := output.GetSource(); source != "" {
+		data["source"] = source
+	}
+	if activationID := output.GetActivationId(); activationID != "" {
+		data["activation_id"] = activationID
+	}
+	if message := output.GetErrorMessage(); message != "" {
+		data["error_message"] = message
+	}
+	return data
+}
+
 func waitForManualAddBalance(ctx workflow.Context, timeoutSeconds int32) error {
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = 1800
@@ -147,6 +212,48 @@ func waitForManualAddBalance(ctx workflow.Context, timeoutSeconds int32) error {
 		return fmt.Errorf("manual add_balance not confirmed after %ds", timeoutSeconds)
 	}
 	return fmt.Errorf("manual add_balance wait ended unexpectedly")
+}
+
+func waitForGoPayAddBalanceSelection(ctx workflow.Context, activityCtx workflow.Context, jobID string, timeoutSeconds int32) (*GoPayAddBalance, error) {
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = 1800
+	}
+	if err := workflow.ExecuteActivity(activityCtx, startJobStepActivityName, JobStepStartInput{
+		JobId:       jobID,
+		StepName:    stepGoPayAppAddBalance,
+		Recoverable: false,
+		Retryable:   true,
+		Detail: protoData(map[string]any{
+			"status":  "awaiting_selection",
+			"methods": goPayAddBalanceMethodOptions(),
+		}),
+	}).Get(ctx, nil); err != nil {
+		return nil, err
+	}
+
+	timer := workflow.NewTimer(ctx, time.Duration(timeoutSeconds)*time.Second)
+	signalCh := workflow.GetSignalChannel(ctx, goPayAddBalanceSelectionSignalName)
+	for {
+		var selected *GoPayAddBalance
+		var timedOut bool
+		selector := workflow.NewSelector(ctx)
+		selector.AddReceive(signalCh, func(c workflow.ReceiveChannel, more bool) {
+			var signal ManualAddBalanceSignal
+			c.Receive(ctx, &signal)
+			selected = signal.GetAddBalance()
+		})
+		selector.AddFuture(timer, func(f workflow.Future) {
+			timedOut = true
+		})
+		selector.Select(ctx)
+
+		if timedOut {
+			return nil, fmt.Errorf("add_balance method not selected after %ds", timeoutSeconds)
+		}
+		if goPayAddBalanceMethod(selected) != "" {
+			return selected, nil
+		}
+	}
 }
 
 func atomicActivityOptions(timeout time.Duration) workflow.ActivityOptions {

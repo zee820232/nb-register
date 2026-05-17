@@ -71,7 +71,6 @@ secrets:
     GOPAY_WA_PHONE_NUMBER: ""
     GOPAY_PIN: ""
     GOPAY_PROXY_POOL: socks5://proxy.internal:10810,socks5://proxy.internal:10811,socks5://proxy.internal:10813,http://proxy.internal:10814
-    GOPAY_SIGNUP_AUTH_UUID: ""
     GOPAY_ADD_BALANCE_ENVELOPE_LINK: ""
     GOPAY_ADD_BALANCE_TRANSFER_INSTRUCTIONS: ""
     GOPAY_ADD_BALANCE_REKBERINAJA_BEARER_TOKEN: ""
