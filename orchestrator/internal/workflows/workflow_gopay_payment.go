@@ -382,14 +382,14 @@ func goPayWAPaymentWorkflow(ctx workflow.Context, input GoPayPaymentWorkflowInpu
 	}
 
 	var waPhone GoPayResolveWAPhoneOutput
-	setWorkflowProgress(ctx, progress, stepGoPayAppWAPhoneCheck)
+	setWorkflowProgress(ctx, progress, stepGoPayAppResolveWAPhone)
 	if err := workflow.ExecuteActivity(gopayCtx, goPayResolveWAPhoneActivityName, GoPayResolveWAPhoneInput{
 		JobId:   input.GetJobId(),
 		UserId:  userID,
 		WaPhone: input.GetWaPhone(),
 	}).Get(ctx, &waPhone); err != nil {
 		combined["wa_phone"] = protoDataMap(waPhone.GetData())
-		return failGoPayPaymentWorkflow(ctx, retryCtx, result, input.GetJobId(), stepGoPayAppWAPhoneCheck, statusFailedRetryable, false, true, err, combined), nil
+		return failGoPayPaymentWorkflow(ctx, retryCtx, result, input.GetJobId(), stepGoPayAppResolveWAPhone, statusFailedRetryable, false, true, err, combined), nil
 	}
 	userID = waPhone.GetUserId()
 	result.UserId = userID

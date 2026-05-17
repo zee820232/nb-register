@@ -9,7 +9,6 @@ import (
 	"gorm.io/gorm/clause"
 
 	"orchestrator/db"
-	pb "orchestrator/pb"
 )
 
 func (s *Server) GoPayResolveWAPhoneActivity(ctx context.Context, input GoPayResolveWAPhoneInput) (GoPayResolveWAPhoneOutput, error) {
@@ -19,15 +18,10 @@ func (s *Server) GoPayResolveWAPhoneActivity(ctx context.Context, input GoPayRes
 	}
 	output := GoPayResolveWAPhoneOutput{UserId: userID}
 	data := map[string]any{"user_id": userID}
-	step := s.activityStep(ctx, input.GetJobId(), stepGoPayAppWAPhoneCheck, false, true)
+	step := s.activityStep(ctx, input.GetJobId(), stepGoPayAppResolveWAPhone, false, true)
 	_, err = step.run(func() (any, error) {
 		if s.db == nil {
 			err := fmt.Errorf("orchestrator db not configured")
-			data["error_message"] = err.Error()
-			return data, err
-		}
-		if s.gopayClient == nil {
-			err := fmt.Errorf("gopay app client not configured")
 			data["error_message"] = err.Error()
 			return data, err
 		}
@@ -53,26 +47,7 @@ func (s *Server) GoPayResolveWAPhoneActivity(ctx context.Context, input GoPayRes
 			return data, err
 		}
 
-		checkResp, err := s.gopayClient.CheckPhone(ctx, &pb.CheckPhoneRequest{
-			Phone:       phone,
-			CountryCode: configuredGoPayCountryCode(),
-		})
-		if err != nil {
-			err = fmt.Errorf("CheckPhone: %w", err)
-			data["error_message"] = err.Error()
-			return data, err
-		}
-		status := checkPhoneStatus(checkResp)
 		data["phone_present"] = true
-		data["phone_status"] = status
-		message := ""
-		if checkResp != nil {
-			message = strings.TrimSpace(checkResp.GetErrorMessage())
-		}
-		if err := goPayWAPhoneCheckError(status, message); err != nil {
-			data["error_message"] = err.Error()
-			return data, err
-		}
 		if err := s.saveGoPayWAPhoneProfile(ctx, userID, phone); err != nil {
 			data["profile_error"] = err.Error()
 			return data, err
@@ -83,23 +58,6 @@ func (s *Server) GoPayResolveWAPhoneActivity(ctx context.Context, input GoPayRes
 	})
 	output.Data = protoData(data)
 	return output, err
-}
-
-func goPayWAPhoneCheckError(status, message string) error {
-	status = strings.ToLower(strings.TrimSpace(status))
-	message = strings.TrimSpace(message)
-	if status == "available" || status == "registered" {
-		return nil
-	}
-	if message == "" {
-		message = status
-	}
-	switch status {
-	case "rate_limited", "error":
-		return fmt.Errorf("wa_phone check inconclusive: %s", message)
-	default:
-		return fmt.Errorf("wa_phone unavailable: %s", message)
-	}
 }
 
 func (s *Server) GoPayAppLoadStateActivity(ctx context.Context, input GoPayAppStateActivityInput) (GoPayAppStateActivityOutput, error) {
@@ -116,7 +74,7 @@ func (s *Server) GoPayAppLoadStateActivity(ctx context.Context, input GoPayAppSt
 		return output, err
 	}
 	output.StateJson = stateJSON
-	data["state_present"] = strings.TrimSpace(stateJSON) != ""
+	data["state_present"] = goPayWorkflowStatePresent(stateJSON)
 	output.Data = protoData(data)
 	return output, nil
 }
@@ -131,7 +89,7 @@ func (s *Server) GoPayAppSaveStateActivity(ctx context.Context, input GoPayAppSt
 	data := map[string]any{
 		"user_id":       userID,
 		"reason":        input.GetReason(),
-		"state_present": strings.TrimSpace(stateJSON) != "",
+		"state_present": goPayWorkflowStatePresent(stateJSON),
 	}
 	if err := s.saveGoPayAppStateForUser(ctx, userID, stateJSON); err != nil {
 		data["error_message"] = err.Error()

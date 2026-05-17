@@ -285,7 +285,7 @@ const stepLabels: DisplayLabelMap = {
   gopay_app_change_phone_cancel: '取消换绑号码',
   gopay_app_change_phone_complete: '完成换绑',
   gopay_app_signup_phone: '获取未注册 GoPay 号',
-  gopay_app_wa_phone_check: '检测 WA GoPay 号',
+  gopay_app_resolve_wa_phone: '解析 WA 手机号',
   gopay_app_deactivate: 'GoPay 注销',
   gopay_app_deactivate_start: '开始注销',
   gopay_app_deactivate_sms_wait: '等待注销短信',

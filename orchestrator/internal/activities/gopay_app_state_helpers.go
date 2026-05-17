@@ -2,6 +2,7 @@ package activities
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -15,6 +16,15 @@ func normalizeGoPayWorkflowStateJSON(stateJSON string) string {
 		return "{}"
 	}
 	return stateJSON
+}
+
+func goPayWorkflowStatePresent(stateJSON string) bool {
+	stateJSON = normalizeGoPayWorkflowStateJSON(stateJSON)
+	var state map[string]any
+	if err := json.Unmarshal([]byte(stateJSON), &state); err != nil {
+		return false
+	}
+	return len(state) > 0
 }
 
 func goPayWorkflowStateAfter(current, next string) string {

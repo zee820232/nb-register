@@ -58,7 +58,7 @@ const (
 	stepGoPayAppChangePhoneCancel   = "gopay_app_change_phone_cancel"
 	stepGoPayAppChangePhoneComplete = "gopay_app_change_phone_complete"
 	stepGoPayAppSignupPhone         = "gopay_app_signup_phone"
-	stepGoPayAppWAPhoneCheck        = "gopay_app_wa_phone_check"
+	stepGoPayAppResolveWAPhone      = "gopay_app_resolve_wa_phone"
 	stepGoPayAppDeactivate          = "gopay_app_deactivate"
 	stepGoPayAppDeactivateStart     = "gopay_app_deactivate_start"
 	stepGoPayAppDeactivateSMSWait   = "gopay_app_deactivate_sms_wait"
