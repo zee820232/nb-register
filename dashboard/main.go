@@ -133,6 +133,7 @@ func main() {
 	mux.HandleFunc("/api/mailboxes/inbox", s.handleMailboxInbox)
 	mux.HandleFunc("/api/mailboxes/", s.handleMailbox)
 	mux.HandleFunc("/api/mailboxes", s.handleMailboxes)
+	mux.HandleFunc("/api/gpt-email-allocations", s.handleGPTEmailAllocations)
 	mux.HandleFunc("/api/jobs", s.handleJobs)
 	mux.HandleFunc("/api/jobs/events", s.streamJobsEvents)
 	mux.HandleFunc("/api/jobs/", s.handleJob)
@@ -182,22 +183,17 @@ func (s *server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		accountID := randomID()
-		email := strings.TrimSpace(req.Email)
-		if email == "" {
-			emailResp, err := s.emailClient.GetEmail(r.Context(), &pb.GetEmailRequest{})
-			if err != nil {
-				writeError(w, http.StatusBadGateway, err)
-				return
-			}
-			email = emailResp.GetEmailAddress()
-		}
-		resp, err := s.accountClient.CreateAccount(r.Context(), &pb.CreateAccountRequest{Account: &pb.Account{
+		resp, err := s.accountWorkflowClient.CreateGPTAccount(r.Context(), &pb.CreateGPTAccountRequest{
 			AccountId: accountID,
-			Email:     email,
+			Email:     strings.TrimSpace(req.Email),
 			Password:  req.Password,
-		}})
+		})
 		if err != nil {
 			writeError(w, http.StatusBadGateway, err)
+			return
+		}
+		if resp.GetErrorMessage() != "" {
+			writeError(w, http.StatusBadGateway, errors.New(resp.GetErrorMessage()))
 			return
 		}
 		writeJSON(w, http.StatusCreated, resp.GetAccount())
@@ -234,7 +230,6 @@ func (s *server) handleMailboxes(w http.ResponseWriter, r *http.Request) {
 			Password:     req.Password,
 			RefreshToken: req.RefreshToken,
 			AccessToken:  req.AccessToken,
-			Status:       req.Status,
 			AuthStatus:   req.AuthStatus,
 			LastError:    req.LastError,
 			IsPrimary:    true,
@@ -244,10 +239,49 @@ func (s *server) handleMailboxes(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadGateway, err)
 			return
 		}
+		email := strings.ToLower(strings.TrimSpace(resp.GetMailbox().GetEmailAddress()))
+		if email == "" {
+			writeError(w, http.StatusBadGateway, errors.New("email service returned empty mailbox"))
+			return
+		}
+		if _, err := s.accountClient.UpsertGPTEmailAllocation(r.Context(), &pb.UpsertGPTEmailAllocationRequest{
+			Allocation: &pb.GPTEmailAllocation{
+				Email:        email,
+				PrimaryEmail: email,
+				IsPrimary:    true,
+				Status:       gptAllocationStatusFromMailboxInput(req.Status, req.AuthStatus, req.RefreshToken),
+				Splittable:   strings.TrimSpace(req.Status) == "REGISTERED",
+				LastError:    req.LastError,
+			},
+		}); err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
 		writeJSON(w, http.StatusCreated, resp.GetMailbox())
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *server) handleGPTEmailAllocations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	resp, err := s.accountClient.ListGPTEmailAllocations(r.Context(), &pb.ListGPTEmailAllocationsRequest{
+		Status:       strings.TrimSpace(r.URL.Query().Get("status")),
+		Limit:        int32(queryInt(r, "limit", 500)),
+		PrimaryEmail: strings.TrimSpace(r.URL.Query().Get("primary_email")),
+	})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	allocations := resp.GetAllocations()
+	if allocations == nil {
+		allocations = []*pb.GPTEmailAllocation{}
+	}
+	writeJSON(w, http.StatusOK, allocations)
 }
 
 func (s *server) handleMailbox(w http.ResponseWriter, r *http.Request) {
@@ -1236,6 +1270,25 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func gptAllocationStatusFromMailboxInput(statusValue string, authStatusValue string, refreshToken string) string {
+	statusValue = strings.TrimSpace(statusValue)
+	switch statusValue {
+	case "ASSIGNED", "REGISTERED", "USER_ALREADY_EXISTS", "REGISTRATION_FAILED", "BLOCKED":
+		return statusValue
+	}
+	authStatusValue = strings.TrimSpace(authStatusValue)
+	switch authStatusValue {
+	case "AUTH_FAILED", "NEEDS_MANUAL_VERIFICATION":
+		return authStatusValue
+	case "AUTHORIZED":
+		return "AVAILABLE"
+	}
+	if strings.TrimSpace(refreshToken) != "" {
+		return "AVAILABLE"
+	}
+	return "OAUTH_PENDING"
 }
 
 func tailString(value string, limit int) string {

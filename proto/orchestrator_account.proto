@@ -3,10 +3,12 @@ syntax = "proto3";
 package orchestrator;
 
 import "google/protobuf/struct.proto";
+import "account_db.proto";
 
 option go_package = "./;pb";
 
 service AccountWorkflowService {
+  rpc CreateGPTAccount(CreateGPTAccountRequest) returns (CreateGPTAccountResponse);
   rpc RegisterAccount(RegisterAccountRequest) returns (RegisterAccountResponse);
   rpc LoginAccount(LoginAccountRequest) returns (LoginAccountResponse);
   rpc RegisterAndActivateAccount(RegisterAndActivateAccountRequest) returns (RegisterAndActivateAccountResponse);
@@ -28,6 +30,17 @@ message AccountRef {
 
 message EnsureAccountInput {
   AccountSpec account = 1;
+}
+
+message CreateGPTAccountRequest {
+  string email = 1;
+  string password = 2;
+  string account_id = 3;
+}
+
+message CreateGPTAccountResponse {
+  accountdb.Account account = 1;
+  string error_message = 2;
 }
 
 message PersistRegisteredInput {

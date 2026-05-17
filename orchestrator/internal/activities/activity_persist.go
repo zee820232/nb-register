@@ -5,6 +5,7 @@ import (
 	"orchestrator/db"
 	"orchestrator/internal/jobprojection"
 	"orchestrator/pb"
+	"strings"
 )
 
 func (s *Server) PersistRegisteredActivity(ctx context.Context, input PersistRegisteredInput) error {
@@ -17,7 +18,22 @@ func (s *Server) PersistRegisteredActivity(ctx context.Context, input PersistReg
 	if input.GetPlusTrialChecked() {
 		account.PlusTrialEligible = boolPtr(input.GetPlusTrialEligible())
 	}
-	return s.updateAccount(ctx, account)
+	if err := s.updateAccount(ctx, account); err != nil {
+		return err
+	}
+	registeredAccount, err := s.getAccount(ctx, input.GetAccountId())
+	if err != nil {
+		return err
+	}
+	email := strings.TrimSpace(registeredAccount.GetEmail())
+	if email == "" {
+		return nil
+	}
+	_, err = s.accountClient.MarkGPTEmailAllocationStatus(ctx, &pb.MarkGPTEmailAllocationStatusRequest{
+		Email:  email,
+		Status: emailStatusRegistered,
+	})
+	return err
 }
 
 func (s *Server) PersistActivatedActivity(ctx context.Context, input PersistActivatedInput) error {

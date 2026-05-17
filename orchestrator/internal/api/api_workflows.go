@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"github.com/google/uuid"
+	"orchestrator/internal/activities"
 	"orchestrator/internal/contracts"
 	"orchestrator/internal/workflows"
 	"orchestrator/pb"
@@ -10,6 +11,34 @@ import (
 
 	proto "google.golang.org/protobuf/proto"
 )
+
+func (s *Server) CreateGPTAccount(ctx context.Context, req *pb.CreateGPTAccountRequest) (*pb.CreateGPTAccountResponse, error) {
+	accountID := strings.TrimSpace(req.GetAccountId())
+	if accountID == "" {
+		accountID = uuid.NewString()
+	}
+	email := strings.TrimSpace(req.GetEmail())
+	if email == "" {
+		allocated, err := activities.NewAccountEmailAllocator(s.accountClient).Allocate(ctx, accountID, nil)
+		if err != nil {
+			return &pb.CreateGPTAccountResponse{ErrorMessage: err.Error()}, nil
+		}
+		email = strings.TrimSpace(allocated)
+	}
+	if email == "" {
+		return &pb.CreateGPTAccountResponse{ErrorMessage: "email allocator returned empty email"}, nil
+	}
+
+	resp, err := s.accountClient.CreateAccount(ctx, &pb.CreateAccountRequest{Account: &pb.Account{
+		AccountId: accountID,
+		Email:     email,
+		Password:  req.GetPassword(),
+	}})
+	if err != nil {
+		return &pb.CreateGPTAccountResponse{ErrorMessage: err.Error()}, nil
+	}
+	return &pb.CreateGPTAccountResponse{Account: resp.GetAccount()}, nil
+}
 
 func (s *Server) RegisterAccount(ctx context.Context, req *pb.RegisterAccountRequest) (*pb.RegisterAccountResponse, error) {
 	jobID := uuid.NewString()

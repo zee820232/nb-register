@@ -17,6 +17,7 @@ type Config struct {
 	GoPayClient                       pb.GopayAppServiceClient
 	SmsClient                         pb.SmsServiceClient
 	EmailClient                       pb.EmailServiceClient
+	EmailAllocator                    AccountEmailAllocator
 	MailboxRegisterClient             pb.MailboxRegistrationServiceClient
 	OTPAddr                           string
 	OTPTimeout                        int32
@@ -41,6 +42,7 @@ type Server struct {
 	gopayClient                       pb.GopayAppServiceClient
 	smsClient                         pb.SmsServiceClient
 	emailClient                       pb.EmailServiceClient
+	emailAllocator                    AccountEmailAllocator
 	mailboxRegisterClient             pb.MailboxRegistrationServiceClient
 	otpAddr                           string
 	otpTimeout                        int32
@@ -66,6 +68,7 @@ func NewServer(cfg Config) *Server {
 		gopayClient:                       cfg.GoPayClient,
 		smsClient:                         cfg.SmsClient,
 		emailClient:                       cfg.EmailClient,
+		emailAllocator:                    defaultAccountEmailAllocator(cfg.EmailAllocator, cfg.AccountClient),
 		mailboxRegisterClient:             cfg.MailboxRegisterClient,
 		otpAddr:                           cfg.OTPAddr,
 		otpTimeout:                        cfg.OTPTimeout,

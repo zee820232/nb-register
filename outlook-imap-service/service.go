@@ -36,26 +36,6 @@ func (s *EmailService) acquireInboxLock(ctx context.Context) (func(), error) {
 	}
 }
 
-func (s *EmailService) GetEmail(ctx context.Context, request *pb.GetEmailRequest) (*pb.GetEmailResponse, error) {
-	mailbox, err := s.store.AcquireEmail(ctx, request.GetExcludeEmailAddresses())
-	if err != nil {
-		return nil, status.Error(codes.FailedPrecondition, err.Error())
-	}
-	return &pb.GetEmailResponse{
-		EmailAddress: mailbox.GetEmailAddress(),
-		Password:     mailbox.GetPassword(),
-		Mailbox:      mailbox,
-	}, nil
-}
-
-func (s *EmailService) MarkEmailStatus(ctx context.Context, request *pb.MarkEmailStatusRequest) (*pb.MarkEmailStatusResponse, error) {
-	mailbox, err := s.store.MarkEmailStatus(ctx, request.GetEmailAddress(), request.GetStatus(), request.GetLastError())
-	if err != nil {
-		return nil, status.Error(codes.FailedPrecondition, err.Error())
-	}
-	return &pb.MarkEmailStatusResponse{Mailbox: mailbox}, nil
-}
-
 func (s *EmailService) MarkEmailAuthStatus(ctx context.Context, request *pb.MarkEmailAuthStatusRequest) (*pb.MarkEmailAuthStatusResponse, error) {
 	mailbox, err := s.store.MarkEmailAuthStatus(ctx, request.GetEmailAddress(), request.GetAuthStatus(), request.GetLastError())
 	if err != nil {

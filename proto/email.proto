@@ -22,28 +22,6 @@ message EmailMailbox {
   string auth_status = 15;
 }
 
-message GetEmailRequest {
-  reserved 1;
-  repeated string exclude_email_addresses = 2;
-}
-
-message GetEmailResponse {
-  string email_address = 1;
-  string password = 2;
-  EmailMailbox mailbox = 3;
-}
-
-message MarkEmailStatusRequest {
-  string email_address = 1;
-  reserved 2;
-  string status = 3;
-  string last_error = 4;
-}
-
-message MarkEmailStatusResponse {
-  EmailMailbox mailbox = 1;
-}
-
 message MarkEmailAuthStatusRequest {
   string email_address = 1;
   string auth_status = 2;
@@ -123,8 +101,6 @@ message FetchInboxesResponse {
 }
 
 service EmailService {
-  rpc GetEmail(GetEmailRequest) returns (GetEmailResponse);
-  rpc MarkEmailStatus(MarkEmailStatusRequest) returns (MarkEmailStatusResponse);
   rpc MarkEmailAuthStatus(MarkEmailAuthStatusRequest) returns (MarkEmailAuthStatusResponse);
   rpc UpsertMailbox(UpsertEmailMailboxRequest) returns (UpsertEmailMailboxResponse);
   rpc ListMailboxes(ListEmailMailboxesRequest) returns (ListEmailMailboxesResponse);

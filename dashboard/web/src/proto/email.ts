@@ -25,26 +25,6 @@ export interface EmailMailbox {
   auth_status: string;
 }
 
-export interface GetEmailRequest {
-  exclude_email_addresses: string[];
-}
-
-export interface GetEmailResponse {
-  email_address: string;
-  password: string;
-  mailbox: EmailMailbox | undefined;
-}
-
-export interface MarkEmailStatusRequest {
-  email_address: string;
-  status: string;
-  last_error: string;
-}
-
-export interface MarkEmailStatusResponse {
-  mailbox: EmailMailbox | undefined;
-}
-
 export interface MarkEmailAuthStatusRequest {
   email_address: string;
   auth_status: string;

@@ -19,6 +19,9 @@ func Run() {
 		log.Fatalf("Failed to initialize orchestrator dependencies: %v", err)
 	}
 	defer deps.Close()
+	if err := syncGPTEmailAllocationsFromMailboxes(deps); err != nil {
+		log.Fatalf("Failed to sync GPT email allocations: %v", err)
+	}
 
 	lis, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {

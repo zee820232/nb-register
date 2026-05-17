@@ -78,17 +78,7 @@ func (s *Server) EnsureAccountActivity(ctx context.Context, input EnsureAccountI
 			return AccountRef{}, err
 		}
 		if strings.TrimSpace(account.GetEmail()) == "" {
-			email, err := s.acquireEmail(ctx, nil)
-			if err != nil {
-				return AccountRef{}, err
-			}
-			if err := s.updateAccount(ctx, &pb.Account{
-				AccountId: spec.GetAccountId(),
-				Email:     email,
-				Status:    statusCreated,
-			}); err != nil {
-				return AccountRef{}, err
-			}
+			return AccountRef{}, fmt.Errorf("account email is required")
 		}
 		return accountRef(account), nil
 	}
@@ -96,7 +86,7 @@ func (s *Server) EnsureAccountActivity(ctx context.Context, input EnsureAccountI
 	email := spec.Email
 	if strings.TrimSpace(email) == "" {
 		var err error
-		email, err = s.acquireEmail(ctx, nil)
+		email, err = s.acquireEmail(ctx, spec.GetAccountId(), nil)
 		if err != nil {
 			return AccountRef{}, err
 		}
@@ -123,19 +113,18 @@ func (s *Server) EnsureAccountActivity(ctx context.Context, input EnsureAccountI
 	return accountRef(resp.GetAccount()), nil
 }
 
-func (s *Server) acquireEmail(ctx context.Context, excludes []string) (string, error) {
-	resp, err := s.emailClient.GetEmail(ctx, &pb.GetEmailRequest{
-		ExcludeEmailAddresses: excludes,
-	})
+func (s *Server) acquireEmail(ctx context.Context, accountID string, excludes []string) (string, error) {
+	allocator := s.emailAllocator
+	if allocator == nil {
+		allocator = defaultAccountEmailAllocator(nil, s.accountClient)
+	}
+	email, err := allocator.Allocate(ctx, accountID, excludes)
 	if err != nil {
 		return "", err
 	}
-	email := strings.TrimSpace(resp.GetEmailAddress())
-	if email == "" && resp.GetMailbox() != nil {
-		email = strings.TrimSpace(resp.GetMailbox().GetEmailAddress())
-	}
+	email = strings.TrimSpace(email)
 	if email == "" {
-		return "", fmt.Errorf("email service returned empty email")
+		return "", fmt.Errorf("email allocator returned empty email")
 	}
 	return email, nil
 }

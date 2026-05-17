@@ -9,7 +9,8 @@ import (
 )
 
 type accountClientForEmailStatusTest struct {
-	account *pb.Account
+	account    *pb.Account
+	markStatus *pb.MarkGPTEmailAllocationStatusRequest
 }
 
 func (c *accountClientForEmailStatusTest) CreateAccount(context.Context, *pb.CreateAccountRequest, ...grpc.CallOption) (*pb.CreateAccountResponse, error) {
@@ -32,68 +33,51 @@ func (c *accountClientForEmailStatusTest) ListAccounts(context.Context, *pb.List
 	return nil, nil
 }
 
-type emailClientForEmailStatusTest struct {
-	markStatus *pb.MarkEmailStatusRequest
-}
-
-func (c *emailClientForEmailStatusTest) GetEmail(context.Context, *pb.GetEmailRequest, ...grpc.CallOption) (*pb.GetEmailResponse, error) {
+func (c *accountClientForEmailStatusTest) UpsertGPTEmailAllocation(context.Context, *pb.UpsertGPTEmailAllocationRequest, ...grpc.CallOption) (*pb.UpsertGPTEmailAllocationResponse, error) {
 	return nil, nil
 }
 
-func (c *emailClientForEmailStatusTest) MarkEmailStatus(_ context.Context, req *pb.MarkEmailStatusRequest, _ ...grpc.CallOption) (*pb.MarkEmailStatusResponse, error) {
+func (c *accountClientForEmailStatusTest) ListGPTEmailAllocations(context.Context, *pb.ListGPTEmailAllocationsRequest, ...grpc.CallOption) (*pb.ListGPTEmailAllocationsResponse, error) {
+	return nil, nil
+}
+
+func (c *accountClientForEmailStatusTest) ClaimGPTEmailAllocation(context.Context, *pb.ClaimGPTEmailAllocationRequest, ...grpc.CallOption) (*pb.ClaimGPTEmailAllocationResponse, error) {
+	return nil, nil
+}
+
+func (c *accountClientForEmailStatusTest) CreateGPTEmailAliasAllocation(context.Context, *pb.CreateGPTEmailAliasAllocationRequest, ...grpc.CallOption) (*pb.CreateGPTEmailAliasAllocationResponse, error) {
+	return nil, nil
+}
+
+func (c *accountClientForEmailStatusTest) MarkGPTEmailAllocationStatus(_ context.Context, req *pb.MarkGPTEmailAllocationStatusRequest, _ ...grpc.CallOption) (*pb.MarkGPTEmailAllocationStatusResponse, error) {
 	c.markStatus = req
-	return &pb.MarkEmailStatusResponse{Mailbox: &pb.EmailMailbox{
-		EmailAddress: req.GetEmailAddress(),
-		Status:       req.GetStatus(),
+	return &pb.MarkGPTEmailAllocationStatusResponse{Allocation: &pb.GPTEmailAllocation{
+		Email:  req.GetEmail(),
+		Status: req.GetStatus(),
 	}}, nil
 }
 
-func (c *emailClientForEmailStatusTest) MarkEmailAuthStatus(context.Context, *pb.MarkEmailAuthStatusRequest, ...grpc.CallOption) (*pb.MarkEmailAuthStatusResponse, error) {
-	return nil, nil
-}
-
-func (c *emailClientForEmailStatusTest) UpsertMailbox(context.Context, *pb.UpsertEmailMailboxRequest, ...grpc.CallOption) (*pb.UpsertEmailMailboxResponse, error) {
-	return nil, nil
-}
-
-func (c *emailClientForEmailStatusTest) ListMailboxes(context.Context, *pb.ListEmailMailboxesRequest, ...grpc.CallOption) (*pb.ListEmailMailboxesResponse, error) {
-	return nil, nil
-}
-
-func (c *emailClientForEmailStatusTest) DeleteMailbox(context.Context, *pb.DeleteMailboxRequest, ...grpc.CallOption) (*pb.DeleteMailboxResponse, error) {
-	return nil, nil
-}
-
-func (c *emailClientForEmailStatusTest) WaitForEmail(context.Context, *pb.WaitForEmailRequest, ...grpc.CallOption) (*pb.WaitForEmailResponse, error) {
-	return nil, nil
-}
-
-func (c *emailClientForEmailStatusTest) FetchInboxes(context.Context, *pb.FetchInboxesRequest, ...grpc.CallOption) (*pb.FetchInboxesResponse, error) {
-	return nil, nil
-}
-
 func TestMarkAccountEmailUserAlreadyExists(t *testing.T) {
-	emailClient := &emailClientForEmailStatusTest{}
-	server := &Server{
-		accountClient: &accountClientForEmailStatusTest{
-			account: &pb.Account{
-				AccountId: "account-1",
-				Email:     "ConnieKaiser5272@outlook.com",
-			},
+	accountClient := &accountClientForEmailStatusTest{
+		account: &pb.Account{
+			AccountId: "account-1",
+			Email:     "ConnieKaiser5272@outlook.com",
 		},
-		emailClient: emailClient,
+	}
+	server := &Server{
+		accountClient: accountClient,
 	}
 
 	if err := server.markAccountEmailUserAlreadyExists(context.Background(), "account-1", "user already exists"); err != nil {
 		t.Fatalf("mark account email user already exists: %v", err)
 	}
 
-	req := emailClient.markStatus
+	req := accountClient.markStatus
 	if req == nil {
-		t.Fatal("expected MarkEmailStatus call")
+		t.Fatal("expected MarkGPTEmailAllocationStatus call")
 	}
-	if req.GetEmailAddress() != "ConnieKaiser5272@outlook.com" {
-		t.Fatalf("email address = %q, want assigned account email", req.GetEmailAddress())
+	if req.GetEmail() != "ConnieKaiser5272@outlook.com" {
+		t.Fatalf("email address = %q, want assigned account email", req.GetEmail())
 	}
 	if req.GetStatus() != emailStatusUserAlreadyExists {
 		t.Fatalf("status = %q, want %q", req.GetStatus(), emailStatusUserAlreadyExists)

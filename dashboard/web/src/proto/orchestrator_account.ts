@@ -5,6 +5,7 @@
 // source: orchestrator_account.proto
 
 /* eslint-disable */
+import type { Account } from "./account_db";
 
 export const protobufPackage = "orchestrator";
 
@@ -24,6 +25,17 @@ export interface AccountRef {
 
 export interface EnsureAccountInput {
   account: AccountSpec | undefined;
+}
+
+export interface CreateGPTAccountRequest {
+  email: string;
+  password: string;
+  account_id: string;
+}
+
+export interface CreateGPTAccountResponse {
+  account: Account | undefined;
+  error_message: string;
 }
 
 export interface PersistRegisteredInput {

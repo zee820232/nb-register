@@ -70,3 +70,68 @@ export interface ListAccountsRequest {
 export interface ListAccountsResponse {
   accounts: Account[];
 }
+
+export interface GPTEmailAllocation {
+  email: string;
+  primary_email: string;
+  is_primary: boolean;
+  status: string;
+  splittable: boolean;
+  assigned_account_id: string;
+  last_error: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface UpsertGPTEmailAllocationRequest {
+  allocation: GPTEmailAllocation | undefined;
+}
+
+export interface UpsertGPTEmailAllocationResponse {
+  allocation: GPTEmailAllocation | undefined;
+}
+
+export interface ListGPTEmailAllocationsRequest {
+  status: string;
+  limit: number;
+  primary_email: string;
+  splittable_only: boolean;
+}
+
+export interface ListGPTEmailAllocationsResponse {
+  allocations: GPTEmailAllocation[];
+}
+
+export interface ClaimGPTEmailAllocationRequest {
+  email: string;
+  account_id: string;
+  expected_status: string;
+  status: string;
+  require_primary_splittable: boolean;
+  expected_primary_status: string;
+}
+
+export interface ClaimGPTEmailAllocationResponse {
+  claimed: boolean;
+  allocation: GPTEmailAllocation | undefined;
+}
+
+export interface CreateGPTEmailAliasAllocationRequest {
+  primary_email: string;
+  account_id: string;
+}
+
+export interface CreateGPTEmailAliasAllocationResponse {
+  created: boolean;
+  allocation: GPTEmailAllocation | undefined;
+}
+
+export interface MarkGPTEmailAllocationStatusRequest {
+  email: string;
+  status: string;
+  last_error: string;
+}
+
+export interface MarkGPTEmailAllocationStatusResponse {
+  allocation: GPTEmailAllocation | undefined;
+}

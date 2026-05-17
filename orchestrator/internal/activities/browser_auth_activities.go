@@ -245,7 +245,7 @@ func (s *Server) completeBrowserAuthStep(ctx context.Context, jobID, stepName, a
 }
 
 func (s *Server) markAccountEmailUserAlreadyExists(ctx context.Context, accountID string, lastError string) error {
-	if s.emailClient == nil {
+	if s.accountClient == nil {
 		return nil
 	}
 	account, err := s.getAccount(ctx, accountID)
@@ -256,12 +256,12 @@ func (s *Server) markAccountEmailUserAlreadyExists(ctx context.Context, accountI
 	if email == "" {
 		return nil
 	}
-	_, err = s.emailClient.MarkEmailStatus(ctx, &pb.MarkEmailStatusRequest{
-		EmailAddress: email,
-		Status:       emailStatusUserAlreadyExists,
-		LastError:    lastError,
+	_, err = s.accountClient.MarkGPTEmailAllocationStatus(ctx, &pb.MarkGPTEmailAllocationStatusRequest{
+		Email:     email,
+		Status:    emailStatusUserAlreadyExists,
+		LastError: lastError,
 	})
-	if err != nil && strings.Contains(strings.ToLower(err.Error()), "mailbox not found") {
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "gpt email allocation not found") {
 		return nil
 	}
 	return err

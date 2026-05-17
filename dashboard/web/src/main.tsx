@@ -117,6 +117,18 @@ type Mailbox = {
   latest_otp_received_at_unix: number;
 };
 
+type GPTEmailAllocation = {
+  email: string;
+  primary_email: string;
+  is_primary: boolean;
+  status: string;
+  splittable: boolean;
+  assigned_account_id: string;
+  last_error: string;
+  created_at: number;
+  updated_at: number;
+};
+
 type MailboxOAuthResponse = {
   started: boolean;
   job_id: string;
@@ -288,6 +300,7 @@ function App() {
   const [jobSnapshots, setJobSnapshots] = useState<JobSnapshot[]>([]);
   const [runningJobSnapshots, setRunningJobSnapshots] = useState<JobSnapshot[]>([]);
   const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
+  const [gptEmailAllocations, setGptEmailAllocations] = useState<GPTEmailAllocation[]>([]);
   const [activeView, setActiveView] = useState<ViewKey>('accounts');
   const [workflowTab, setWorkflowTab] = useState<WorkflowTab>('all');
   const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
@@ -342,10 +355,11 @@ function App() {
   async function refresh() {
     setBusy(true);
     try {
-      const [accountsData, jobsData, mailboxesData, runningJobsData] = await Promise.all([
+      const [accountsData, jobsData, mailboxesData, allocationsData, runningJobsData] = await Promise.all([
         api<Account[]>(`/api/accounts?limit=200${accountStatus ? `&status=${accountStatus}` : ''}`),
         api<JobSnapshot[]>(`/api/jobs?limit=200${jobStatus ? `&status=${jobStatus}` : ''}`),
         api<Mailbox[]>('/api/mailboxes?limit=500'),
+        api<GPTEmailAllocation[]>('/api/gpt-email-allocations?limit=500'),
         api<JobSnapshot[]>('/api/jobs?limit=200&status=RUNNING')
       ]);
       setAccounts(Array.isArray(accountsData) ? accountsData : []);
@@ -353,6 +367,7 @@ function App() {
       setRunningJobSnapshots(Array.isArray(runningJobsData) ? runningJobsData : []);
       const nextMailboxes = Array.isArray(mailboxesData) ? mailboxesData : [];
       setMailboxes(nextMailboxes);
+      setGptEmailAllocations(Array.isArray(allocationsData) ? allocationsData : []);
       if (selectedJob) {
         await refreshSelectedJob(selectedJob.job_id);
       }
@@ -753,8 +768,8 @@ function App() {
   }
 
   const primaryMailboxes = mailboxes.filter((mailbox) => mailbox.is_primary);
-  const visiblePrimaryMailboxes = primaryMailboxes.filter((mailbox) => mailboxMatchesFilter(mailbox, mailboxes, mailboxStatus));
-  const allocatableMailboxCount = primaryMailboxes.filter((m) => m.status === 'AVAILABLE' && authStatus(m) === 'AUTHORIZED').length;
+  const visiblePrimaryMailboxes = primaryMailboxes.filter((mailbox) => mailboxMatchesFilter(mailbox, mailboxes, gptEmailAllocations, mailboxStatus));
+  const allocatableMailboxCount = countAllocatableEmailAllocations(gptEmailAllocations);
   const missingOAuthCount = primaryMailboxes.filter((mailbox) => (
     mailbox.password && authStatus(mailbox) !== 'AUTHORIZED' && authStatus(mailbox) !== 'NEEDS_MANUAL_VERIFICATION'
   )).length;
@@ -762,7 +777,8 @@ function App() {
   const selectedMailboxInbox = selectedMailbox ? inboxResultForMailbox(inboxResponse, selectedMailbox.email_address) : undefined;
   const selectedMailboxBans = selectedMailbox ? bansForMailbox(inboxResponse, selectedMailbox.email_address) : [];
   const selectedMailboxAliases = selectedMailbox ? aliasesForMailbox(mailboxes, selectedMailbox) : [];
-  const selectedAccountMailboxContext = selectedAccount ? mailboxContextForEmail(mailboxes, selectedAccount.email) : null;
+  const selectedMailboxAllocation = selectedMailbox ? allocationForEmail(gptEmailAllocations, selectedMailbox.email_address) : undefined;
+  const selectedAccountMailboxContext = selectedAccount ? mailboxContextForEmail(mailboxes, gptEmailAllocations, selectedAccount.email) : null;
   const selectedAccountLatestOtp = selectedAccount ? latestOtpForEmail(inboxResponse, mailboxes, selectedAccount.email) : null;
   const gptWorkflowJobs = jobs.filter((job) => gptWorkflowActions.has(job.action));
   const gopayWorkflowJobs = jobs.filter((job) => gopayWorkflowActions.has(job.action));
@@ -803,7 +819,7 @@ function App() {
         <nav className="navRail" aria-label="主导航">
           <NavItem active={activeView === 'accounts'} icon={<OpenAIIcon size={17} />} label="GPT账号" count={accounts.length} countLabel="全部 GPT 账号数" onClick={() => openView('accounts')} />
           <NavItem active={activeView === 'gopay'} icon={<RefreshCcw size={17} />} label="GoPay" count={runningGoPayAppCount} countLabel="运行中的 GoPay App 任务" onClick={() => openView('gopay')} />
-          <NavItem active={activeView === 'mailboxes'} icon={<Inbox size={17} />} label="邮箱管理" count={allocatableMailboxCount} countLabel="可分配主邮箱数" onClick={() => openView('mailboxes')} />
+          <NavItem active={activeView === 'mailboxes'} icon={<Inbox size={17} />} label="邮箱管理" count={allocatableMailboxCount} countLabel="可分配邮箱源数" onClick={() => openView('mailboxes')} />
           <NavItem active={activeView === 'jobs'} icon={<ListChecks size={17} />} label="工作流" count={runningJobCount} countLabel="运行中的工作流任务" onClick={() => openView('jobs')} />
         </nav>
 
@@ -812,7 +828,7 @@ function App() {
             <section className="metrics">
               <Metric label="GPT账号" value={accounts.length} hint="当前 GPT 账号池总量" icon={<OpenAIIcon />} />
               <Metric label="已激活" value={accounts.filter((a) => a.status === 'ACTIVATED').length} hint="可进入后续使用的账号" icon={<Zap />} />
-              <Metric label="可分配邮箱" value={allocatableMailboxCount} hint="AVAILABLE 且 OAuth 已授权" icon={<Mail />} />
+              <Metric label="可分配邮箱源" value={allocatableMailboxCount} hint="可用主邮箱、可用分裂邮箱、可分裂主邮箱" icon={<Mail />} />
               <Metric label="运行中任务" value={runningJobCount} hint="正在执行的工作流" icon={<Activity />} />
             </section>
           )}
@@ -909,6 +925,7 @@ function App() {
                 <MailboxPanel
                   mailboxes={visiblePrimaryMailboxes}
                   allMailboxes={primaryMailboxes}
+                  allocations={gptEmailAllocations}
                   selected={selectedMailbox?.email_address}
                   busy={busy}
                   showSecrets={showSecrets}
@@ -970,7 +987,7 @@ function App() {
                         <Play size={16} /> {mailboxRegistering ? '启动中' : '启动注册'}
                       </Button>
                     </div>
-                    <MailboxStatusStrip mailboxes={primaryMailboxes} />
+                    <MailboxStatusStrip mailboxes={primaryMailboxes} allocations={gptEmailAllocations} />
                     <JobTable jobs={jobsForWorkflowTab} selected={selectedJob?.job_id} emptyText="暂无邮箱工作流" onSelect={selectJob} />
                   </TabsContent>
                 </Tabs>
@@ -1026,6 +1043,8 @@ function App() {
             inboxResult={selectedMailboxInbox}
             bans={selectedMailboxBans}
             aliases={selectedMailboxAliases}
+            allocation={selectedMailboxAllocation}
+            allocations={gptEmailAllocations}
             inboxLoading={inboxLoading}
             onCopy={copyField}
             onFetchInbox={fetchMailboxInbox}
@@ -1729,9 +1748,10 @@ function JobTable({ jobs, selected, emptyText = '暂无工作流任务', onSelec
   );
 }
 
-function MailboxPanel({ mailboxes, allMailboxes, selected, busy, showSecrets, oauthing, runningWorkflowByEmail, onSelect, onOpenWorkflow, onOAuth, onDelete, onDone, onError }: {
+function MailboxPanel({ mailboxes, allMailboxes, allocations, selected, busy, showSecrets, oauthing, runningWorkflowByEmail, onSelect, onOpenWorkflow, onOAuth, onDelete, onDone, onError }: {
   mailboxes: Mailbox[];
   allMailboxes: Mailbox[];
+  allocations: GPTEmailAllocation[];
   selected?: string;
   busy: boolean;
   showSecrets: boolean;
@@ -1768,7 +1788,7 @@ function MailboxPanel({ mailboxes, allMailboxes, selected, busy, showSecrets, oa
 
   return (
     <>
-      <MailboxStatusStrip mailboxes={allMailboxes} />
+      <MailboxStatusStrip mailboxes={allMailboxes} allocations={allocations} />
       <div className="mailboxImportHeader">
         <div>
           <strong>主邮箱列表</strong>
@@ -1804,6 +1824,9 @@ function MailboxPanel({ mailboxes, allMailboxes, selected, busy, showSecrets, oa
               const canOAuth = mailbox.is_primary && !!mailbox.password;
               const oauthLabel = authStatus(mailbox) === 'AUTHORIZED' ? '重新 OAuth' : '补 OAuth';
               const currentWorkflow = runningWorkflowByEmail.get(normalizeUiEmail(mailbox.email_address));
+              const allocation = allocationForEmail(allocations, mailbox.email_address);
+              const usageStatus = allocation?.status || '-';
+              const errorText = allocation?.last_error || mailbox.last_error || '-';
               return (
                 <TableRow key={mailbox.email_address} className={selected === mailbox.email_address ? 'selected' : ''} onClick={() => onSelect(mailbox)}>
                   <TableCell data-label="主邮箱">
@@ -1813,12 +1836,12 @@ function MailboxPanel({ mailboxes, allMailboxes, selected, busy, showSecrets, oa
                     </div>
                   </TableCell>
                   <TableCell data-label="最近邮件"><MailboxActivityCell mailbox={mailbox} showSecrets={showSecrets} /></TableCell>
-                  <TableCell data-label="占用"><StatusBadge status={mailbox.status} /></TableCell>
+                  <TableCell data-label="占用"><StatusBadge status={usageStatus} /></TableCell>
                   <TableCell data-label="OAuth"><StatusBadge status={authStatus(mailbox)} /></TableCell>
                   <TableCell data-label="Token"><TokenBadge mailbox={mailbox} /></TableCell>
                   <TableCell data-label="更新">{formatUnix(mailbox.updated_at)}</TableCell>
-                  <TableCell data-label="错误" className="mailboxErrorCell" title={mailbox.last_error}>
-                    <span>{compactCellError(mailbox.last_error || '-')}</span>
+                  <TableCell data-label="错误" className="mailboxErrorCell" title={errorText}>
+                    <span>{compactCellError(errorText)}</span>
                   </TableCell>
                   <TableCell data-label="操作">
                     <div className="rowActions" onClick={(event) => event.stopPropagation()}>
@@ -1960,7 +1983,7 @@ function WorkflowSummary({ job, runningCount, runningTitle, runningText, idleTit
   );
 }
 
-function MailboxStatusStrip({ mailboxes }: { mailboxes: Mailbox[] }) {
+function MailboxStatusStrip({ mailboxes, allocations }: { mailboxes: Mailbox[]; allocations: GPTEmailAllocation[] }) {
   const usageItems = ['AVAILABLE', 'ASSIGNED', 'REGISTERED', 'USER_ALREADY_EXISTS', 'REGISTRATION_FAILED', 'BLOCKED'];
   const authItems = ['AUTHORIZED', 'OAUTH_PENDING', 'AUTH_FAILED', 'NEEDS_MANUAL_VERIFICATION'];
   return (
@@ -1970,7 +1993,7 @@ function MailboxStatusStrip({ mailboxes }: { mailboxes: Mailbox[] }) {
         <div className="statusStripGrid">
           {usageItems.map((status) => (
             <div key={status}>
-              <strong>{mailboxes.filter((mailbox) => mailbox.status === status).length}</strong>
+              <strong>{allocations.filter((allocation) => allocation.status === status).length}</strong>
               <span>{statusText(status)}</span>
             </div>
           ))}
@@ -1991,8 +2014,9 @@ function MailboxStatusStrip({ mailboxes }: { mailboxes: Mailbox[] }) {
   );
 }
 
-function MailboxAliasesSection({ aliases, showSecrets, onDelete }: {
+function MailboxAliasesSection({ aliases, allocations, showSecrets, onDelete }: {
   aliases: Mailbox[];
+  allocations: GPTEmailAllocation[];
   showSecrets: boolean;
   onDelete: (mailbox: Mailbox) => Promise<void>;
 }) {
@@ -2003,26 +2027,31 @@ function MailboxAliasesSection({ aliases, showSecrets, onDelete }: {
         <span className="muted">{aliases.length}</span>
       </div>
       <div className="aliasList">
-        {aliases.map((alias) => (
-          <div className="aliasItem" key={alias.email_address}>
-            <div className="aliasIdentity">
-              <strong>{showSecrets ? alias.email_address : maskEmail(alias.email_address)}</strong>
-              <span><StatusBadge status={alias.status} /> <StatusBadge status={authStatus(alias)} /></span>
+        {aliases.map((alias) => {
+          const allocation = allocationForEmail(allocations, alias.email_address);
+          return (
+            <div className="aliasItem" key={alias.email_address}>
+              <div className="aliasIdentity">
+                <strong>{showSecrets ? alias.email_address : maskEmail(alias.email_address)}</strong>
+                <span><StatusBadge status={allocation?.status || '-'} /> <StatusBadge status={authStatus(alias)} /></span>
+              </div>
+              <MailboxActivityCell mailbox={alias} showSecrets={showSecrets} />
+              <Button className="iconButton dangerButton" {...buttonHint('删除 Alias')} onClick={() => onDelete(alias)}>
+                <Trash2 size={14} />
+              </Button>
             </div>
-            <MailboxActivityCell mailbox={alias} showSecrets={showSecrets} />
-            <Button className="iconButton dangerButton" {...buttonHint('删除 Alias')} onClick={() => onDelete(alias)}>
-              <Trash2 size={14} />
-            </Button>
-          </div>
-        ))}
+          );
+        })}
         {aliases.length === 0 && <div className="inboxEmpty">暂无 Alias 邮箱。</div>}
       </div>
     </section>
   );
 }
 
-function MailboxDetails({ mailbox, showSecrets, inboxResult, bans, aliases, inboxLoading, onCopy, onFetchInbox, onDelete }: {
+function MailboxDetails({ mailbox, allocation, allocations, showSecrets, inboxResult, bans, aliases, inboxLoading, onCopy, onFetchInbox, onDelete }: {
   mailbox: Mailbox;
+  allocation?: GPTEmailAllocation;
+  allocations: GPTEmailAllocation[];
   showSecrets: boolean;
   inboxResult?: InboxResult;
   bans: BanDetection[];
@@ -2034,6 +2063,7 @@ function MailboxDetails({ mailbox, showSecrets, inboxResult, bans, aliases, inbo
 }) {
   const [activeTab, setActiveTab] = useState<MailboxDetailTab>('overview');
   const inboxMessageCount = inboxResult?.messages?.length || 0;
+  const usageStatus = allocation?.status || '-';
 
   useEffect(() => {
     setActiveTab('overview');
@@ -2056,7 +2086,7 @@ function MailboxDetails({ mailbox, showSecrets, inboxResult, bans, aliases, inbo
                 <strong>{showSecrets ? mailbox.email_address : maskEmail(mailbox.email_address)}</strong>
               </div>
               <div className="summaryBadges">
-                <StatusBadge status={mailbox.status} />
+                <StatusBadge status={usageStatus} />
                 <StatusBadge status={authStatus(mailbox)} />
               </div>
             </div>
@@ -2069,7 +2099,8 @@ function MailboxDetails({ mailbox, showSecrets, inboxResult, bans, aliases, inbo
           <h3>邮箱</h3>
           <KV label="邮箱" value={showSecrets ? mailbox.email_address : maskEmail(mailbox.email_address)} copyValue={mailbox.email_address} copyDisabled={!mailbox.email_address} masked={!showSecrets} onCopy={onCopy} />
           <KV label="密码" value={showSecrets ? mailbox.password : mask(mailbox.password)} copyValue={mailbox.password} copyDisabled={!mailbox.password} masked={!showSecrets} mono onCopy={onCopy} />
-          <KV label="占用" value={statusText(mailbox.status)} copyValue={mailbox.status || '-'} onCopy={onCopy} />
+          <KV label="占用" value={statusText(usageStatus)} copyValue={usageStatus} onCopy={onCopy} />
+          <KV label="可分裂" value={allocation?.splittable ? '是' : '否'} onCopy={onCopy} />
           <KV label="OAuth" value={statusText(authStatus(mailbox))} onCopy={onCopy} />
           <KV label="Token" value={tokenText(mailbox)} onCopy={onCopy} />
           <KV label="Alias 数" value={String(aliases.length)} onCopy={onCopy} />
@@ -2080,7 +2111,7 @@ function MailboxDetails({ mailbox, showSecrets, inboxResult, bans, aliases, inbo
           <KV label="OTP 时间" value={formatUnix(mailbox.latest_otp_received_at_unix)} onCopy={onCopy} />
           <KV label="创建时间" value={formatUnix(mailbox.created_at)} onCopy={onCopy} />
           <KV label="更新时间" value={formatUnix(mailbox.updated_at)} onCopy={onCopy} />
-          <KV label="错误" value={mailbox.last_error || '-'} onCopy={onCopy} />
+          <KV label="错误" value={allocation?.last_error || mailbox.last_error || '-'} onCopy={onCopy} />
           <div className="buttonRow detailActions">
             <Button className="dangerButton" onClick={() => onDelete(mailbox)}>
               <Trash2 size={14} /> {mailbox.is_primary ? '删除主邮箱' : '删除 Alias'}
@@ -2091,7 +2122,7 @@ function MailboxDetails({ mailbox, showSecrets, inboxResult, bans, aliases, inbo
 
       {activeTab === 'aliases' && (
         <div className="mailboxTabPanel">
-          <MailboxAliasesSection aliases={aliases} showSecrets={showSecrets} onDelete={onDelete} />
+          <MailboxAliasesSection aliases={aliases} allocations={allocations} showSecrets={showSecrets} onDelete={onDelete} />
         </div>
       )}
 
@@ -2615,15 +2646,16 @@ function latestOtpForEmail(response: InboxResponse | null, mailboxes: Mailbox[],
   return candidates[0] || null;
 }
 
-function mailboxContextForEmail(mailboxes: Mailbox[], email: string): AccountMailboxContext {
+function mailboxContextForEmail(mailboxes: Mailbox[], allocations: GPTEmailAllocation[], email: string): AccountMailboxContext {
   const accountEmail = normalizeUiEmail(email);
   const mailbox = mailboxes.find((item) => normalizeUiEmail(item.email_address) === accountEmail);
-  const primaryEmail = normalizeUiEmail(mailbox?.primary_email || canonicalUiEmail(accountEmail));
+  const allocation = allocationForEmail(allocations, accountEmail);
+  const primaryEmail = normalizeUiEmail(allocation?.primary_email || mailbox?.primary_email || canonicalUiEmail(accountEmail));
   return {
     account_email: accountEmail,
     primary_email: primaryEmail,
     is_split: !!accountEmail && !!primaryEmail && accountEmail !== primaryEmail,
-    known: !!mailbox
+    known: !!mailbox || !!allocation
   };
 }
 
@@ -2653,13 +2685,28 @@ function aliasesForMailbox(mailboxes: Mailbox[], mailbox: Mailbox) {
     .sort((a, b) => b.updated_at - a.updated_at);
 }
 
-function mailboxMatchesFilter(mailbox: Mailbox, allMailboxes: Mailbox[], filter: string) {
+function countAllocatableEmailAllocations(allocations: GPTEmailAllocation[]) {
+  return allocations.filter((allocation) => (
+    allocation.status === 'AVAILABLE' ||
+    (allocation.is_primary && allocation.status === 'REGISTERED' && allocation.splittable)
+  )).length;
+}
+
+function mailboxMatchesFilter(mailbox: Mailbox, allMailboxes: Mailbox[], allocations: GPTEmailAllocation[], filter: string) {
   if (!filter) return true;
   const aliases = aliasesForMailbox(allMailboxes, mailbox);
   if (isAuthFilter(filter)) {
     return authStatus(mailbox) === filter || aliases.some((alias) => authStatus(alias) === filter);
   }
-  return mailbox.status === filter || aliases.some((alias) => alias.status === filter);
+  const allocation = allocationForEmail(allocations, mailbox.email_address);
+  return allocation?.status === filter ||
+    allocations.some((item) => normalizeUiEmail(item.primary_email) === normalizeUiEmail(mailbox.email_address) && item.status === filter);
+}
+
+function allocationForEmail(allocations: GPTEmailAllocation[], email: string) {
+  const target = normalizeUiEmail(email);
+  if (!target) return undefined;
+  return allocations.find((allocation) => normalizeUiEmail(allocation.email) === target);
 }
 
 function isAuthFilter(value: string) {

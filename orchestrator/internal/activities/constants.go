@@ -30,6 +30,7 @@ const (
 	accountStatusUserAlreadyExists = "USER_ALREADY_EXISTS"
 
 	emailStatusAvailable         = "AVAILABLE"
+	emailStatusAssigned          = "ASSIGNED"
 	emailStatusRegistered        = "REGISTERED"
 	emailStatusOAuthPending      = "OAUTH_PENDING"
 	emailStatusUserAlreadyExists = "USER_ALREADY_EXISTS"

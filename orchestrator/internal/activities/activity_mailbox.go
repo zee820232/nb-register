@@ -87,7 +87,6 @@ func (s *Server) RegisterMailboxAtomicActivity(ctx context.Context, input Mailbo
 					Password:     password,
 					RefreshToken: refreshToken,
 					AccessToken:  accessToken,
-					Status:       emailStatusAvailable,
 					AuthStatus:   authStatus,
 					LastError:    "",
 					IsPrimary:    true,
@@ -109,9 +108,30 @@ func (s *Server) RegisterMailboxAtomicActivity(ctx context.Context, input Mailbo
 				data["error_message"] = msg
 				return data, fmt.Errorf("%s", msg)
 			}
+			allocationStatus := gptAllocationStatusForMailboxAuth(authStatus)
+			allocResp, allocErr := s.accountClient.UpsertGPTEmailAllocation(ctx, &pb.UpsertGPTEmailAllocationRequest{
+				Allocation: &pb.GPTEmailAllocation{
+					Email:        email,
+					PrimaryEmail: email,
+					IsPrimary:    true,
+					Status:       allocationStatus,
+					Splittable:   false,
+					LastError:    "",
+				},
+			})
+			if allocErr != nil {
+				output.Success = false
+				output.ErrorMessage = allocErr.Error()
+				data["success"] = false
+				data["error_message"] = allocErr.Error()
+				return data, allocErr
+			}
+			if allocResp.GetAllocation() != nil && strings.TrimSpace(allocResp.GetAllocation().GetStatus()) != "" {
+				allocationStatus = allocResp.GetAllocation().GetStatus()
+			}
 			importedMailbox := RegisteredMailboxResult{
 				EmailAddress: upsertResp.GetMailbox().GetEmailAddress(),
-				Status:       upsertResp.GetMailbox().GetStatus(),
+				Status:       allocationStatus,
 			}
 			output.Mailboxes = append(output.Mailboxes, &importedMailbox)
 			imported = append(imported, map[string]any{
@@ -203,6 +223,22 @@ func (s *Server) MailboxOAuthAtomicActivity(ctx context.Context, input MailboxOA
 					data["error_message"] = upsertErr.Error()
 					return data, upsertErr
 				}
+				if _, upsertErr := s.accountClient.UpsertGPTEmailAllocation(ctx, &pb.UpsertGPTEmailAllocationRequest{
+					Allocation: &pb.GPTEmailAllocation{
+						Email:        email,
+						PrimaryEmail: email,
+						IsPrimary:    true,
+						Status:       emailStatusAvailable,
+						Splittable:   false,
+						LastError:    "",
+					},
+				}); upsertErr != nil {
+					output.Success = false
+					output.ErrorMessage = upsertErr.Error()
+					data["success"] = false
+					data["error_message"] = upsertErr.Error()
+					return data, upsertErr
+				}
 				continue
 			}
 			if email != "" && !item.GetSuccess() {
@@ -211,6 +247,16 @@ func (s *Server) MailboxOAuthAtomicActivity(ctx context.Context, input MailboxOA
 					EmailAddress: email,
 					AuthStatus:   mailboxOAuthFailureStatus(errorMessage),
 					LastError:    errorMessage,
+				})
+				_, _ = s.accountClient.UpsertGPTEmailAllocation(ctx, &pb.UpsertGPTEmailAllocationRequest{
+					Allocation: &pb.GPTEmailAllocation{
+						Email:        email,
+						PrimaryEmail: email,
+						IsPrimary:    true,
+						Status:       mailboxOAuthFailureStatus(errorMessage),
+						Splittable:   false,
+						LastError:    errorMessage,
+					},
 				})
 			}
 		}
@@ -297,6 +343,17 @@ func mailboxOAuthFailureStatus(errorMessage string) string {
 		return emailAuthStatusNeedsManualVerify
 	}
 	return emailAuthStatusAuthFailed
+}
+
+func gptAllocationStatusForMailboxAuth(authStatus string) string {
+	switch strings.TrimSpace(authStatus) {
+	case emailAuthStatusAuthorized:
+		return emailStatusAvailable
+	case emailAuthStatusAuthFailed, emailAuthStatusNeedsManualVerify:
+		return strings.TrimSpace(authStatus)
+	default:
+		return emailStatusOAuthPending
+	}
 }
 
 func mailboxAuthStatus(mailbox *pb.EmailMailbox) string {

@@ -67,10 +67,80 @@ message ListAccountsResponse {
   repeated Account accounts = 1;
 }
 
+message GPTEmailAllocation {
+  string email = 1;
+  string primary_email = 2;
+  bool is_primary = 3;
+  string status = 4;
+  bool splittable = 5;
+  string assigned_account_id = 6;
+  string last_error = 7;
+  int64 created_at = 8;
+  int64 updated_at = 9;
+}
+
+message UpsertGPTEmailAllocationRequest {
+  GPTEmailAllocation allocation = 1;
+}
+
+message UpsertGPTEmailAllocationResponse {
+  GPTEmailAllocation allocation = 1;
+}
+
+message ListGPTEmailAllocationsRequest {
+  string status = 1;
+  int32 limit = 2;
+  string primary_email = 3;
+  bool splittable_only = 4;
+}
+
+message ListGPTEmailAllocationsResponse {
+  repeated GPTEmailAllocation allocations = 1;
+}
+
+message ClaimGPTEmailAllocationRequest {
+  string email = 1;
+  string account_id = 2;
+  string expected_status = 3;
+  string status = 4;
+  bool require_primary_splittable = 5;
+  string expected_primary_status = 6;
+}
+
+message ClaimGPTEmailAllocationResponse {
+  bool claimed = 1;
+  GPTEmailAllocation allocation = 2;
+}
+
+message CreateGPTEmailAliasAllocationRequest {
+  string primary_email = 1;
+  string account_id = 2;
+}
+
+message CreateGPTEmailAliasAllocationResponse {
+  bool created = 1;
+  GPTEmailAllocation allocation = 2;
+}
+
+message MarkGPTEmailAllocationStatusRequest {
+  string email = 1;
+  string status = 2;
+  string last_error = 3;
+}
+
+message MarkGPTEmailAllocationStatusResponse {
+  GPTEmailAllocation allocation = 1;
+}
+
 service AccountDatabaseService {
   rpc CreateAccount(CreateAccountRequest) returns (CreateAccountResponse);
   rpc GetAccount(GetAccountRequest) returns (GetAccountResponse);
   rpc UpdateAccount(UpdateAccountRequest) returns (UpdateAccountResponse);
   rpc DeleteAccount(DeleteAccountRequest) returns (DeleteAccountResponse);
   rpc ListAccounts(ListAccountsRequest) returns (ListAccountsResponse);
+  rpc UpsertGPTEmailAllocation(UpsertGPTEmailAllocationRequest) returns (UpsertGPTEmailAllocationResponse);
+  rpc ListGPTEmailAllocations(ListGPTEmailAllocationsRequest) returns (ListGPTEmailAllocationsResponse);
+  rpc ClaimGPTEmailAllocation(ClaimGPTEmailAllocationRequest) returns (ClaimGPTEmailAllocationResponse);
+  rpc CreateGPTEmailAliasAllocation(CreateGPTEmailAliasAllocationRequest) returns (CreateGPTEmailAliasAllocationResponse);
+  rpc MarkGPTEmailAllocationStatus(MarkGPTEmailAllocationStatusRequest) returns (MarkGPTEmailAllocationStatusResponse);
 }
