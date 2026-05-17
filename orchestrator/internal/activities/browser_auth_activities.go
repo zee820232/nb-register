@@ -237,8 +237,34 @@ func (s *Server) completeBrowserAuthStep(ctx context.Context, jobID, stepName, a
 		}); updateErr != nil {
 			err = fmt.Errorf("%w; additionally failed to mark account user already exists: %v", err, updateErr)
 		}
+		if updateErr := s.markAccountEmailUserAlreadyExists(ctx, accountID, err.Error()); updateErr != nil {
+			err = fmt.Errorf("%w; additionally failed to mark mailbox user already exists: %v", err, updateErr)
+		}
 	}
 	return s.completeActivityStep(ctx, jobID, stepName, false, true, data, err)
+}
+
+func (s *Server) markAccountEmailUserAlreadyExists(ctx context.Context, accountID string, lastError string) error {
+	if s.emailClient == nil {
+		return nil
+	}
+	account, err := s.getAccount(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	email := strings.TrimSpace(account.GetEmail())
+	if email == "" {
+		return nil
+	}
+	_, err = s.emailClient.MarkEmailStatus(ctx, &pb.MarkEmailStatusRequest{
+		EmailAddress: email,
+		Status:       emailStatusUserAlreadyExists,
+		LastError:    lastError,
+	})
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "mailbox not found") {
+		return nil
+	}
+	return err
 }
 
 func browserAuthStepName(mode string) (string, error) {

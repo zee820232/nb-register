@@ -6,7 +6,6 @@ import {
   CheckCircle2,
   Clock,
   Copy,
-  Database,
   Eye,
   EyeOff,
   Inbox,
@@ -26,6 +25,7 @@ import {
   Zap
 } from 'lucide-react';
 import QRCode from 'qrcode';
+import { Dialog as DialogPrimitive } from 'radix-ui';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -46,6 +46,7 @@ import {
   TableHeader,
   TableRow
 } from '@/components/ui/table';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import type { Job, JobEvent, JobSnapshot, JobStep as Step, WorkflowProgress } from './proto/orchestrator_job';
 import './styles.css';
@@ -72,10 +73,6 @@ type ManualAddBalanceConfirmResponse = {
   error_message?: string;
 };
 
-function snapshotEventID(snapshot: JobSnapshot) {
-  return snapshot.event_id || snapshot.job?.updated_at || snapshot.progress?.updated_at_unix || 0;
-}
-
 function isRunningSnapshot(snapshot: JobSnapshot) {
   return snapshot.job?.status === 'RUNNING';
 }
@@ -87,9 +84,14 @@ function jobSnapshotMatchesStatus(snapshot: JobSnapshot, status: string) {
 function mergeJobSnapshots(prev: JobSnapshot[], snapshot: JobSnapshot, include: boolean) {
   const jobID = snapshot.job?.job_id;
   if (!jobID) return prev;
-  const next = prev.filter((item) => item.job?.job_id !== jobID);
-  if (!include) return next;
-  return [snapshot, ...next].sort((a, b) => snapshotEventID(b) - snapshotEventID(a));
+  const index = prev.findIndex((item) => item.job?.job_id === jobID);
+  if (!include) {
+    return index === -1 ? prev : prev.filter((item) => item.job?.job_id !== jobID);
+  }
+  if (index === -1) return [snapshot, ...prev];
+  const next = [...prev];
+  next[index] = snapshot;
+  return next;
 }
 
 function mergeJobEvents(prev: JobEvent[], event: JobEvent, jobID: string) {
@@ -175,7 +177,8 @@ type AccountMailboxContext = {
 type GoPayOTPChannel = 'sms' | 'wa';
 
 type Toast = { kind: 'ok' | 'error'; text: string } | null;
-type ViewKey = 'accounts' | 'gopay' | 'mailboxes' | 'mailboxRegistration' | 'jobs';
+type ViewKey = 'accounts' | 'gopay' | 'mailboxes' | 'jobs';
+type WorkflowTab = 'all' | 'gpt' | 'gopay' | 'mailbox';
 type MailboxDetailTab = 'overview' | 'aliases' | 'inbox';
 type DisplayLabelMap = Record<string, string>;
 type PanelState = { loading: boolean; error: string };
@@ -238,6 +241,10 @@ const actionLabels: DisplayLabelMap = {
   MAILBOX_OAUTH: 'Microsoft OAuth'
 };
 
+const gptWorkflowActions = new Set(['REGISTER', 'LOGIN_SESSION', 'ACTIVATE', 'AUTOPAY', 'REGISTER_AND_ACTIVATE', 'PROBE_ACCOUNT']);
+const gopayWorkflowActions = new Set(['GOPAY_APP', 'GOPAY_PAYMENT', 'GOPAY_PAYMENT_REBIND']);
+const mailboxWorkflowActions = new Set(['REGISTER_MAILBOX', 'MAILBOX_OAUTH']);
+
 const stepLabels: DisplayLabelMap = {
   register_account: '注册账号',
   login_session: '登录取 Token',
@@ -282,6 +289,7 @@ function App() {
   const [runningJobSnapshots, setRunningJobSnapshots] = useState<JobSnapshot[]>([]);
   const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
   const [activeView, setActiveView] = useState<ViewKey>('accounts');
+  const [workflowTab, setWorkflowTab] = useState<WorkflowTab>('all');
   const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
   const [selectedJobSnapshot, setSelectedJobSnapshot] = useState<JobSnapshot | null>(null);
   const [selectedJobEvents, setSelectedJobEvents] = useState<JobEvent[]>([]);
@@ -292,7 +300,6 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<Toast>(null);
   const [showSecrets, setShowSecrets] = useState(false);
-  const [gopayOtpChannel, setGopayOtpChannel] = useState<GoPayOTPChannel>('sms');
   const [gopayWaPhone, setGopayWaPhone] = useState('');
   const [mailboxRegistering, setMailboxRegistering] = useState(false);
   const [mailboxOAuthing, setMailboxOAuthing] = useState('');
@@ -305,6 +312,7 @@ function App() {
   const runningJobs = runningJobSnapshots.map((snapshot) => snapshot.job).filter((job): job is Job => !!job);
   const runningJobCount = runningJobs.length;
   const runningAccountIds = new Set(runningJobs.filter((job) => job.account_id).map((job) => job.account_id));
+  const runningJobByAccountID = latestJobMap(runningJobs.filter((job) => job.account_id), (job) => job.account_id);
   const selectedJob = selectedJobSnapshot?.job || null;
   const selectedJobProgress = selectedJobSnapshot?.progress || null;
   const selectedJobID = selectedJob?.job_id || '';
@@ -636,7 +644,7 @@ function App() {
 
   useEffect(() => {
     refresh();
-  }, [accountStatus, jobStatus, mailboxStatus]);
+  }, [accountStatus, jobStatus]);
 
   useEffect(() => {
     if (!runningJobIDsKey) {
@@ -752,11 +760,19 @@ function App() {
   const selectedMailboxAliases = selectedMailbox ? aliasesForMailbox(mailboxes, selectedMailbox) : [];
   const selectedAccountMailboxContext = selectedAccount ? mailboxContextForEmail(mailboxes, selectedAccount.email) : null;
   const selectedAccountLatestOtp = selectedAccount ? latestOtpForEmail(inboxResponse, mailboxes, selectedAccount.email) : null;
-  const mailboxRegisterJobs = jobs.filter((job) => job.action === 'REGISTER_MAILBOX');
-  const runningMailboxRegisterCount = mailboxRegisterJobs.filter((job) => job.status === 'RUNNING').length;
-  const gopayAppJobs = jobs.filter((job) => job.action === 'GOPAY_APP' || job.action === 'GOPAY_PAYMENT' || job.action === 'GOPAY_PAYMENT_REBIND');
-  const runningGoPayAppCount = gopayAppJobs.filter((job) => job.status === 'RUNNING').length;
-  const latestGoPayAppJob = gopayAppJobs[0];
+  const gptWorkflowJobs = jobs.filter((job) => gptWorkflowActions.has(job.action));
+  const gopayWorkflowJobs = jobs.filter((job) => gopayWorkflowActions.has(job.action));
+  const mailboxWorkflowJobs = jobs.filter((job) => mailboxWorkflowActions.has(job.action));
+  const mailboxRegisterJobs = mailboxWorkflowJobs.filter((job) => job.action === 'REGISTER_MAILBOX');
+  const runningMailboxRegisterCount = runningJobs.filter((job) => job.action === 'REGISTER_MAILBOX').length;
+  const runningGoPayAppCount = runningJobs.filter((job) => job.action === 'GOPAY_APP').length;
+  const jobsForWorkflowTab = workflowTab === 'gpt'
+    ? gptWorkflowJobs
+    : workflowTab === 'gopay'
+      ? gopayWorkflowJobs
+      : workflowTab === 'mailbox'
+        ? mailboxWorkflowJobs
+        : jobs;
   const latestMailboxRegisterJob = mailboxRegisterJobs[0];
   const panelState: PanelState = {
     loading: busy && accounts.length === 0 && jobs.length === 0 && mailboxes.length === 0,
@@ -768,7 +784,7 @@ function App() {
       <header className="topbar">
         <div>
           <h1>NB Register</h1>
-          <p>账号、注册、激活和 GoPay 工作流控制台</p>
+          <p>GPT 账号、邮箱和工作流控制台</p>
         </div>
         <div className="topbarActions">
           <Button className="primaryButton" onClick={refresh} disabled={busy}>
@@ -781,17 +797,16 @@ function App() {
 
       <section className="appFrame">
         <nav className="navRail" aria-label="主导航">
-          <NavItem active={activeView === 'accounts'} icon={<Database size={17} />} label="账号" count={accounts.length} countLabel="全部账号数" onClick={() => openView('accounts')} />
+          <NavItem active={activeView === 'accounts'} icon={<OpenAIIcon size={17} />} label="GPT账号" count={accounts.length} countLabel="全部 GPT 账号数" onClick={() => openView('accounts')} />
           <NavItem active={activeView === 'gopay'} icon={<RefreshCcw size={17} />} label="GoPay" count={runningGoPayAppCount} countLabel="运行中的 GoPay App 任务" onClick={() => openView('gopay')} />
           <NavItem active={activeView === 'mailboxes'} icon={<Inbox size={17} />} label="邮箱管理" count={allocatableMailboxCount} countLabel="可分配主邮箱数" onClick={() => openView('mailboxes')} />
-          <NavItem active={activeView === 'mailboxRegistration'} icon={<Play size={17} />} label="邮箱注册" count={runningMailboxRegisterCount} countLabel="运行中的邮箱注册任务" onClick={() => openView('mailboxRegistration')} />
           <NavItem active={activeView === 'jobs'} icon={<ListChecks size={17} />} label="工作流" count={runningJobCount} countLabel="运行中的工作流任务" onClick={() => openView('jobs')} />
         </nav>
 
         <div className="contentPane">
           {activeView === 'accounts' && (
             <section className="metrics">
-              <Metric label="账号" value={accounts.length} hint="当前账号池总量" icon={<ShieldCheck />} />
+              <Metric label="GPT账号" value={accounts.length} hint="当前 GPT 账号池总量" icon={<OpenAIIcon />} />
               <Metric label="已激活" value={accounts.filter((a) => a.status === 'ACTIVATED').length} hint="可进入后续使用的账号" icon={<Zap />} />
               <Metric label="可分配邮箱" value={allocatableMailboxCount} hint="AVAILABLE 且 OAuth 已授权" icon={<Mail />} />
               <Metric label="运行中任务" value={runningJobCount} hint="正在执行的工作流" icon={<Activity />} />
@@ -806,7 +821,7 @@ function App() {
           {activeView === 'accounts' && (
             <section className="workspace accountsWorkspace">
               <div className="panel accountsPanel">
-                <PanelHeader title="账号管理" icon={<Search size={16} />}>
+                <PanelHeader title="GPT账号管理" icon={<Search size={16} />}>
                   <div className="headerControls">
                     <Button className="secondaryButton" onClick={() => setShowSecrets((v) => !v)}>
                       {showSecrets ? <EyeOff size={16} /> : <Eye size={16} />}
@@ -831,9 +846,11 @@ function App() {
                   selected={selectedAccount?.account_id}
                   showSecrets={showSecrets}
                   runningAccountIds={runningAccountIds}
+                  runningWorkflowByAccountID={runningJobByAccountID}
                   refreshingAccessTokenIds={refreshingAccessTokenIds}
                   busy={busy}
                   onSelect={selectAccount}
+                  onOpenWorkflow={selectJob}
                   onRegister={(account) => runAccountWorkflow('注册账号', '/api/workflows/register', account)}
                   onLogin={(account) => runAccountWorkflow(loginActionLabel(account), '/api/workflows/login', account)}
 	                  onGoPayPayment={runGoPayPayment}
@@ -843,60 +860,23 @@ function App() {
                   onDelete={deleteAccount}
                 />
               </div>
-
-              <div className="panel jobsPanel compactPanel">
-                <PanelHeader title="最近工作流" icon={<Activity size={16} />}>
-                  <Button className="secondaryButton" onClick={() => openView('jobs')}>查看全部</Button>
-                </PanelHeader>
-                <JobCompactList jobs={jobs.slice(0, 8)} selected={selectedJob?.job_id} onSelect={selectJob} />
-              </div>
             </section>
           )}
 
           {activeView === 'gopay' && (
             <section className="workspace jobsWorkspace">
-              <div className="panel jobsPanel">
-                <PanelHeader title="GoPay App" icon={<RefreshCcw size={16} />}>
-                  <div className="headerControls">
-                    <NativeSelect
-                      className="compactSelect"
-                      aria-label="GoPay OTP 接码"
-                      value={gopayOtpChannel}
-                      onChange={(event) => setGopayOtpChannel(event.target.value as GoPayOTPChannel)}
-                    >
-                      <NativeSelectOption value="sms">SMS</NativeSelectOption>
-                      <NativeSelectOption value="wa">WA</NativeSelectOption>
-                    </NativeSelect>
-                    {gopayOtpChannel === 'wa' && (
-                      <Input
-                        className="compactInput"
-                        placeholder="WA 手机号"
-                        value={gopayWaPhone}
-                        onChange={(event) => setGopayWaPhone(event.target.value)}
-                      />
-                    )}
-                    <Button className="primaryButton" onClick={runGoPayApp} disabled={busy || runningGoPayAppCount > 0}>
-                      <RefreshCcw size={16} /> {runningGoPayAppCount > 0 ? '执行中' : '启动'}
-                    </Button>
-                    <Button className="secondaryButton" onClick={() => openView('jobs')}>
-                      <ListChecks size={14} /> 全部工作流
-                    </Button>
-                  </div>
-                </PanelHeader>
-                <PanelIntro text="登录、换绑、注销、注册和建 PIN 按工作流顺序执行。" />
-                <div className="mailboxRegisterBody">
-                  <WorkflowSummary
-                    job={latestGoPayAppJob}
-                    runningCount={runningGoPayAppCount}
-                    runningTitle={(count) => `${count} 个 GoPay App 任务运行中`}
-                    runningText="GoPay App 同一时间只跑一个流程，重复触发会被后端锁拦截。"
-                    idleTitle="暂无 GoPay App 任务"
-                    idleText="点击“启动”后会执行 GoPay App 登录、换绑、注销、注册和建 PIN 流程。"
+              <div className="panel debugPanel">
+                <PanelHeader title="GoPay 调试" icon={<RefreshCcw size={16} />} />
+                <div className="debugActions">
+                  <Input
+                    className="compactInput"
+                    placeholder="WA 手机号，可空"
+                    value={gopayWaPhone}
+                    onChange={(event) => setGopayWaPhone(event.target.value)}
                   />
-                  {latestGoPayAppJob && canSubmitOtp(latestGoPayAppJob) && (
-                    <OtpSubmitter job={latestGoPayAppJob} onSubmit={submitJobOtp} />
-                  )}
-                  <JobTable jobs={gopayAppJobs.slice(0, 20)} selected={selectedJob?.job_id} emptyText="暂无 GoPay App 任务" onSelect={selectJob} />
+                  <Button className="primaryButton" onClick={runGoPayApp} disabled={busy || runningGoPayAppCount > 0}>
+                    <RefreshCcw size={16} /> {runningGoPayAppCount > 0 ? '执行中' : '启动 GoPay App'}
+                  </Button>
                 </div>
               </div>
             </section>
@@ -942,41 +922,6 @@ function App() {
 	            </section>
 	          )}
 
-	          {activeView === 'mailboxRegistration' && (
-	            <section className="workspace mailboxRegistrationWorkspace">
-	              <div className="panel mailboxRegisterPanel">
-	                <PanelHeader title="邮箱注册" icon={<Play size={16} />}>
-	                  <div className="headerControls">
-	                    <Button className="primaryButton" onClick={startMailboxRegistration} disabled={busy || mailboxRegistering}>
-	                      <Play size={16} /> {mailboxRegistering ? '启动中' : '启动注册'}
-	                    </Button>
-	                    <Button className="secondaryButton" onClick={() => openView('mailboxes')}>
-	                      <Inbox size={16} /> 邮箱管理
-	                    </Button>
-	                  </div>
-	                </PanelHeader>
-	                <div className="mailboxRegisterBody">
-                    <WorkflowSummary
-                      job={latestMailboxRegisterJob}
-                      runningCount={runningMailboxRegisterCount}
-                      runningTitle={(count) => `${count} 个邮箱注册任务运行中`}
-                      runningText="邮箱注册器同一时间只跑一个进程，重复触发会被后端锁拦截。"
-                      idleTitle="暂无邮箱注册任务"
-                      idleText="点击“启动注册”后会创建 Outlook 邮箱并导入邮箱池。"
-                    />
-	                  <MailboxStatusStrip mailboxes={primaryMailboxes} />
-	                  <div className="sectionTitle">
-	                    <h3>邮箱注册工作流</h3>
-	                    <Button className="secondaryButton" onClick={() => openView('jobs')}>
-	                      <ListChecks size={14} /> 全部工作流
-	                    </Button>
-	                  </div>
-	                  <JobTable jobs={mailboxRegisterJobs.slice(0, 20)} selected={selectedJob?.job_id} emptyText="暂无邮箱注册任务" onSelect={selectJob} />
-	                </div>
-	              </div>
-	            </section>
-	          )}
-
 	          {activeView === 'jobs' && (
             <section className="workspace jobsWorkspace">
               <div className="panel jobsPanel">
@@ -985,14 +930,51 @@ function App() {
                     {jobStatusOptions.map((s) => <NativeSelectOption key={s} value={s}>{s ? statusText(s) : '全部状态'}</NativeSelectOption>)}
                   </NativeSelect>
                 </PanelHeader>
-                <JobTable jobs={jobs} selected={selectedJob?.job_id} emptyText="暂无工作流任务" onSelect={selectJob} />
+                <Tabs value={workflowTab} onValueChange={(value) => setWorkflowTab(value as WorkflowTab)} className="workflowTabs">
+                  <TabsList className="workflowTabList">
+                    <TabsTrigger value="all">全部 {jobs.length}</TabsTrigger>
+                    <TabsTrigger value="gpt">GPT账号 {gptWorkflowJobs.length}</TabsTrigger>
+                    <TabsTrigger value="gopay">GoPay {gopayWorkflowJobs.length}</TabsTrigger>
+                    <TabsTrigger value="mailbox">邮箱 {mailboxWorkflowJobs.length}</TabsTrigger>
+                  </TabsList>
+
+                  <TabsContent value="all" className="workflowTabContent">
+                    <JobTable jobs={jobsForWorkflowTab} selected={selectedJob?.job_id} emptyText="暂无工作流任务" onSelect={selectJob} />
+                  </TabsContent>
+
+                  <TabsContent value="gpt" className="workflowTabContent">
+                    <JobTable jobs={jobsForWorkflowTab} selected={selectedJob?.job_id} emptyText="暂无 GPT 账号工作流" onSelect={selectJob} />
+                  </TabsContent>
+
+                  <TabsContent value="gopay" className="workflowTabContent">
+                    <JobTable jobs={jobsForWorkflowTab} selected={selectedJob?.job_id} emptyText="暂无 GoPay 工作流" onSelect={selectJob} />
+                  </TabsContent>
+
+                  <TabsContent value="mailbox" className="workflowTabContent mailboxWorkflowTab">
+                    <div className="workflowTabToolbar">
+                      <WorkflowSummary
+                        job={latestMailboxRegisterJob}
+                        runningCount={runningMailboxRegisterCount}
+                        runningTitle={(count) => `${count} 个邮箱注册任务运行中`}
+                        runningText="邮箱注册器同一时间只跑一个进程。"
+                        idleTitle="暂无邮箱注册任务"
+                        idleText="还没有启动过邮箱注册。"
+                      />
+                      <Button className="primaryButton" onClick={startMailboxRegistration} disabled={busy || mailboxRegistering}>
+                        <Play size={16} /> {mailboxRegistering ? '启动中' : '启动注册'}
+                      </Button>
+                    </div>
+                    <MailboxStatusStrip mailboxes={primaryMailboxes} />
+                    <JobTable jobs={jobsForWorkflowTab} selected={selectedJob?.job_id} emptyText="暂无邮箱工作流" onSelect={selectJob} />
+                  </TabsContent>
+                </Tabs>
               </div>
             </section>
           )}
         </div>
       </section>
 
-      <DetailDrawer open={!!selectedAccount} title="账号详情" onClose={closeDetails}>
+      <DetailDrawer open={!!selectedAccount} title="GPT账号详情" onClose={closeDetails}>
         {selectedAccount && (
           <AccountDetails
             account={selectedAccount}
@@ -1015,7 +997,7 @@ function App() {
         )}
       </DetailDrawer>
 
-      <DetailDrawer open={!!selectedJob} title="工作流详情" onClose={closeDetails}>
+      <WorkflowDialog open={!!selectedJob} onClose={closeDetails}>
         {selectedJob && (
           <JobDetails
             job={selectedJob}
@@ -1028,7 +1010,7 @@ function App() {
 	            onGoPayRebindRetry={retryGoPayPaymentRebind}
 	          />
         )}
-      </DetailDrawer>
+      </WorkflowDialog>
 
       <DetailDrawer open={!!selectedMailbox} title="邮箱详情" onClose={closeDetails}>
         {selectedMailbox && (
@@ -1063,6 +1045,26 @@ function NavItem({ active, icon, label, count, countLabel, onClick }: {
       <strong>{label}</strong>
       <em aria-label={`${countLabel}: ${count}`}>{count}</em>
     </Button>
+  );
+}
+
+function OpenAIIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M12 3.5a4.2 4.2 0 0 1 3.73 2.28l.43.82.92.08a4.2 4.2 0 0 1 2.09 7.73l-.78.49.04.92a4.2 4.2 0 0 1-5.86 4.03L12 19.5l-.57.35a4.2 4.2 0 0 1-5.86-4.03l.04-.92-.78-.49a4.2 4.2 0 0 1 2.09-7.73l.92-.08.43-.82A4.2 4.2 0 0 1 12 3.5Z"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M8.15 8.55 12 10.78l3.85-2.23M8.15 15.45 12 13.22l3.85 2.23M8.15 8.55v6.9M15.85 8.55v6.9M12 10.78v4.44"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }
 
@@ -1140,6 +1142,36 @@ function DetailDrawer({ open, title, onClose, children }: {
         </div>
       </SheetContent>
     </Sheet>
+  );
+}
+
+function WorkflowDialog({ open, onClose, children }: {
+  open: boolean;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <DialogPrimitive.Root open={open} onOpenChange={(nextOpen) => {
+      if (!nextOpen) onClose();
+    }}>
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Overlay className="workflowDialogOverlay" />
+        <DialogPrimitive.Content className="workflowDialogContent">
+          <div className="workflowDialogHeader">
+            <DialogPrimitive.Title className="drawerTitle"><Activity size={16} />工作流详情</DialogPrimitive.Title>
+            <DialogPrimitive.Description className="sr-only">工作流详情弹窗</DialogPrimitive.Description>
+            <DialogPrimitive.Close asChild>
+              <Button className="iconButton" {...buttonHint('关闭工作流详情')}>
+                <X size={16} />
+              </Button>
+            </DialogPrimitive.Close>
+          </div>
+          <div className="workflowDialogBody">
+            {children}
+          </div>
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   );
 }
 
@@ -1488,15 +1520,17 @@ function TransferQRCode({ payload }: { payload: string }) {
   );
 }
 
-function AccountTable({ accounts, jobs, selected, showSecrets, runningAccountIds, refreshingAccessTokenIds, busy, onSelect, onRegister, onLogin, onGoPayPayment, onProbeAccount, onRegisterActivate, onRefreshAccessToken, onDelete }: {
+function AccountTable({ accounts, jobs, selected, showSecrets, runningAccountIds, runningWorkflowByAccountID, refreshingAccessTokenIds, busy, onSelect, onOpenWorkflow, onRegister, onLogin, onGoPayPayment, onProbeAccount, onRegisterActivate, onRefreshAccessToken, onDelete }: {
   accounts: Account[];
   jobs: Job[];
   selected?: string;
   showSecrets: boolean;
   runningAccountIds: Set<string>;
+  runningWorkflowByAccountID: Map<string, Job>;
   refreshingAccessTokenIds: Set<string>;
   busy: boolean;
   onSelect: (a: Account) => void;
+  onOpenWorkflow: (job: Job) => void;
   onRegister: (a: Account) => void;
   onLogin: (a: Account) => void;
   onGoPayPayment: (a: Account, otpChannel: GoPayOTPChannel) => void;
@@ -1524,6 +1558,7 @@ function AccountTable({ accounts, jobs, selected, showSecrets, runningAccountIds
           {accounts.length === 0 && <EmptyTableRow colSpan={8} text="暂无账号。可以先创建账号，或切换为全部状态查看。" />}
           {accounts.map((account) => {
             const accountBusy = runningAccountIds.has(account.account_id);
+            const currentWorkflow = runningWorkflowByAccountID.get(account.account_id);
             const refreshingAccessToken = refreshingAccessTokenIds.has(account.account_id);
             return (
               <TableRow key={account.account_id} className={selected === account.account_id ? 'selected' : ''} onClick={() => onSelect(account)}>
@@ -1549,8 +1584,10 @@ function AccountTable({ accounts, jobs, selected, showSecrets, runningAccountIds
                   <AccountRowActions
                     account={account}
                     accountBusy={accountBusy}
+                    currentWorkflow={currentWorkflow}
                     busy={busy}
                     refreshingAccessToken={refreshingAccessToken}
+                    onOpenWorkflow={onOpenWorkflow}
                     onRegister={onRegister}
                     onLogin={onLogin}
                     onGoPayPayment={onGoPayPayment}
@@ -1569,11 +1606,13 @@ function AccountTable({ accounts, jobs, selected, showSecrets, runningAccountIds
   );
 }
 
-function AccountRowActions({ account, accountBusy, busy, refreshingAccessToken, onRegister, onLogin, onGoPayPayment, onProbeAccount, onRegisterActivate, onRefreshAccessToken, onDelete }: {
+function AccountRowActions({ account, accountBusy, currentWorkflow, busy, refreshingAccessToken, onOpenWorkflow, onRegister, onLogin, onGoPayPayment, onProbeAccount, onRegisterActivate, onRefreshAccessToken, onDelete }: {
   account: Account;
   accountBusy: boolean;
+  currentWorkflow?: Job;
   busy: boolean;
   refreshingAccessToken: boolean;
+  onOpenWorkflow: (job: Job) => void;
   onRegister: (a: Account) => void;
   onLogin: (a: Account) => void;
   onGoPayPayment: (a: Account, otpChannel: GoPayOTPChannel) => void;
@@ -1582,7 +1621,13 @@ function AccountRowActions({ account, accountBusy, busy, refreshingAccessToken, 
   onRefreshAccessToken: (a: Account) => Promise<void>;
   onDelete: (a: Account) => void;
 }) {
-  if (accountBusy && !isUserAlreadyExistsAccount(account)) return <span className="busyLabel">进行中</span>;
+  if (accountBusy && currentWorkflow && !isUserAlreadyExistsAccount(account)) {
+    return (
+      <div className="rowActions" onClick={(event) => event.stopPropagation()}>
+        <LinkedWorkflowButton job={currentWorkflow} onOpen={onOpenWorkflow} />
+      </div>
+    );
+  }
 
   const actions: RowActionDescriptor[] = [];
   if (canRegister(account)) actions.push({ label: '注册账号', icon: <Play size={14} />, onClick: () => onRegister(account), disabled: busy, kind: 'primary' });
@@ -1633,6 +1678,14 @@ function RowActionButton({ action, showLabel, fullLabel }: { action: RowActionDe
   );
 }
 
+function LinkedWorkflowButton({ job, onOpen }: { job: Job; onOpen: (job: Job) => void }) {
+  return (
+    <Button className="rowButtonText linkedWorkflowButton" {...buttonHint(`查看工作流：${actionText(job.action)}`)} onClick={() => onOpen(job)}>
+      <Activity size={14} /> 工作流
+    </Button>
+  );
+}
+
 function JobTable({ jobs, selected, emptyText = '暂无工作流任务', onSelect }: {
   jobs: Job[];
   selected?: string;
@@ -1666,53 +1719,6 @@ function JobTable({ jobs, selected, emptyText = '暂无工作流任务', onSelec
           ))}
         </TableBody>
       </Table>
-    </div>
-  );
-}
-
-function JobCompactList({ jobs, selected, onSelect }: {
-  jobs: Job[];
-  selected?: string;
-  onSelect: (j: Job) => void;
-}) {
-  if (jobs.length === 0) return <div className="empty compactEmpty">暂无工作流任务。</div>;
-
-  return (
-    <div className="jobCompactList">
-      {jobs.map((job) => (
-        <div
-          key={job.job_id}
-          className={`compactJobItem ${selected === job.job_id ? 'selected' : ''}`}
-          role="button"
-          tabIndex={0}
-          onClick={() => onSelect(job)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault();
-              onSelect(job);
-            }
-          }}
-        >
-          <div className="compactJobHead">
-            <div>
-              <strong>{actionText(job.action)}</strong>
-              <span className="mono">{short(job.job_id)} · {short(job.account_id || '-', 10)}</span>
-            </div>
-            <StatusBadge status={job.status} />
-          </div>
-          <div className="compactJobMeta">
-            <span>{stepText(job.last_step)}</span>
-            <span>{formatJobTime(job.updated_at)}</span>
-          </div>
-          {(job.error_message || canSubmitOtp(job)) && (
-            <div className="compactJobFoot">
-              <span title={job.error_message}>
-                {canSubmitOtp(job) ? '需要 OTP' : compactCellError(job.error_message || '-')}
-              </span>
-            </div>
-          )}
-        </div>
-      ))}
     </div>
   );
 }
@@ -2770,6 +2776,19 @@ function numberValue(value: unknown) {
     return Number.isFinite(parsed) ? parsed : 0;
   }
   return 0;
+}
+
+function latestJobMap(jobs: Job[], keyOf: (job: Job) => string) {
+  const map = new Map<string, Job>();
+  for (const job of jobs) {
+    const key = keyOf(job);
+    if (!key) continue;
+    const previous = map.get(key);
+    if (!previous || (job.updated_at || 0) > (previous.updated_at || 0)) {
+      map.set(key, job);
+    }
+  }
+  return map;
 }
 
 async function copyText(value: string): Promise<boolean> {
