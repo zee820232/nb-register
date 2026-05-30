@@ -34,6 +34,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
+import hmac
 import http.server
 import json
 import os
@@ -612,6 +614,9 @@ LINK_BYPASS_BODY_HINTS = (
     "rate_limit",
 )
 MIDTRANS_STATUS_POLL_LIMIT = 12
+# Midtrans Snap signing key for X-Snap-Signature header (byte-swapped HMAC-SHA256).
+# From gopay886 protocol_payment.py line 49.
+MIDTRANS_SNAP_SIGNING_KEY = "1feab063-bf3f-4025-90bf-3be6fa4f4cc2"
 RETRYABLE_TRANSPORT_HINTS = (
     "tls connect error",
     "connection reset",
@@ -1299,6 +1304,7 @@ class GoPayCharger:
         checkout_cfg: Optional[dict] = None,
         browser_challenge_cfg: Optional[dict] = None,
         pre_solve_passive_captcha: bool = False,
+        sms_switch_countdown_sec: int = 0,
     ):
         self.cs = chatgpt_session
         self.checkout_proxy = _clean_proxy(checkout_proxy)
@@ -1325,6 +1331,9 @@ class GoPayCharger:
         self.checkout_cfg = checkout_cfg or {}
         self.browser_challenge_cfg = browser_challenge_cfg or {}
         self.pre_solve_passive_captcha = bool(pre_solve_passive_captcha)
+        # OTP channel auto-switch: countdown before requesting SMS after WhatsApp OTP sent.
+        # From gopay886 protocol_payment.py SMS_SWITCH_COUNTDOWN_SEC.
+        self.sms_switch_countdown_sec = sms_switch_countdown_sec
         # separate session for non-chatgpt domains (avoid leaking chatgpt cookies)
         self.ext = _new_session()
         self.ext.headers.update({
@@ -1833,6 +1842,39 @@ class GoPayCharger:
 
     # ───── Step 7: Midtrans linking initiation ─────
 
+    def _midtrans_snap_signed_headers(self, url: str, body_text: str, headers: dict) -> tuple[dict, str]:
+        """Generate Midtrans Snap signed headers with byte-swapped HMAC-SHA256.
+
+        The Midtrans frontend JS (js-sha256 library) processes words in 16-bit
+        units rather than bytes, resulting in a hex output with adjacent byte
+        pairs swapped. We replicate this behavior here.
+
+        Returns (signed_headers, body_text).
+        """
+        timestamp = str(int(time.time()))
+        path = urlparse(url).path or url
+        string_to_sign = f"{path}:{timestamp}:{body_text}"
+        digest = hmac.new(
+            MIDTRANS_SNAP_SIGNING_KEY.encode(),
+            string_to_sign.encode(),
+            hashlib.sha256,
+        ).digest()
+        # Byte-swap: js-sha256 hex() outputs Uint32 words as big-endian, which
+        # swaps each adjacent pair of bytes in the standard hex representation.
+        signature = b"".join(
+            digest[i + 1 : i + 2] + digest[i : i + 1] for i in range(0, len(digest), 2)
+        ).hex()
+        signed = dict(headers)
+        signed["X-Snap-Signature"] = signature
+        signed["X-Timestamp"] = timestamp
+        return signed, body_text
+
+    @staticmethod
+    def _midtrans_missing_snap_signature(r: Any) -> bool:
+        """Check if response indicates missing X-Snap-Signature header."""
+        text = (getattr(r, "text", "") or "").lower()
+        return r.status_code == 401 and "missing x-snap-signature" in text
+
     def _midtrans_init_linking(self, snap_token: str) -> str:
         """POST snap/v3/accounts/{snap}/linking. Retries on 406, bypasses on 429."""
         url = f"https://app.midtrans.com/snap/v3/accounts/{snap_token}/linking"
@@ -1845,12 +1887,45 @@ class GoPayCharger:
         auth_headers = self._midtrans_headers(snap_token, json_body=True, auth=True)
         last_err: Optional[str] = None
         bypass_tried = False
+        signed_required = False
         for attempt in range(1, LINK_RETRY_LIMIT + 2):
-            r = self._ext_request("post", url, json=body, headers=auth_headers, timeout=DEFAULT_TIMEOUT)
+            request_headers = auth_headers
+            request_body_text = None
+
+            if signed_required:
+                body_text = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+                request_headers, request_body_text = self._midtrans_snap_signed_headers(
+                    url, body_text, auth_headers,
+                )
+                r = self._ext_request(
+                    "post", url, data=request_body_text,
+                    headers=request_headers, timeout=DEFAULT_TIMEOUT,
+                )
+            else:
+                r = self._ext_request("post", url, json=body, headers=auth_headers, timeout=DEFAULT_TIMEOUT)
+
             ref = self._parse_linking_reference(r)
             if ref:
                 self.log(f"[gopay] midtrans linking ok reference={ref}")
                 return ref
+
+            # Detect missing X-Snap-Signature and retry with signed headers
+            if not signed_required and self._midtrans_missing_snap_signature(r):
+                signed_required = True
+                body_text = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+                signed_h, signed_body = self._midtrans_snap_signed_headers(
+                    url, body_text, auth_headers,
+                )
+                self.log("[gopay] midtrans linking requires X-Snap-Signature; retrying signed")
+                r = self._ext_request(
+                    "post", url, data=signed_body,
+                    headers=signed_h, timeout=DEFAULT_TIMEOUT,
+                )
+                ref = self._parse_linking_reference(r)
+                if ref:
+                    self.log(f"[gopay] midtrans linking signed ok reference={ref}")
+                    return ref
+
             if r.status_code == 406:
                 try:
                     j = r.json()
@@ -1870,10 +1945,21 @@ class GoPayCharger:
                 self.log(
                     f"[gopay] midtrans linking rate-limited status={r.status_code}; retrying without Authorization",
                 )
-                rb = self._ext_request(
-                    "post",
-                    url, json=body, headers=base_headers, timeout=DEFAULT_TIMEOUT,
-                )
+                # Use signed headers if required, but strip Authorization
+                bypass_h = dict(request_headers)
+                for key in list(bypass_h):
+                    if key.lower() == "authorization":
+                        bypass_h.pop(key, None)
+                if request_body_text is None:
+                    rb = self._ext_request(
+                        "post",
+                        url, json=body, headers=bypass_h, timeout=DEFAULT_TIMEOUT,
+                    )
+                else:
+                    rb = self._ext_request(
+                        "post",
+                        url, data=request_body_text, headers=bypass_h, timeout=DEFAULT_TIMEOUT,
+                    )
                 ref = self._parse_linking_reference(rb)
                 if ref:
                     self.log(f"[gopay] midtrans linking bypass ok reference={ref}")
@@ -1957,7 +2043,17 @@ class GoPayCharger:
             self.log("[gopay] consent ok, OTP required")
         else:
             self.log("[gopay] consent ok, OTP not required")
+        # OTP channel auto-switch: immediately request SMS resend after consent.
+        # From gopay886 protocol_payment.py — skips WhatsApp, goes straight to SMS.
+        self._gopay_switch_to_sms(reference_id)
         return payload
+
+    def _gopay_switch_to_sms(self, reference_id: str):
+        """Request SMS OTP via resend-otp, optionally after a countdown delay."""
+        if self.sms_switch_countdown_sec > 0:
+            self.log(f"[gopay] waiting {self.sms_switch_countdown_sec}s before requesting SMS OTP")
+            time.sleep(self.sms_switch_countdown_sec)
+        self._gopay_resend_otp(reference_id)
 
     def _gopay_resend_otp(self, reference_id: str) -> dict:
         """Try resend-otp to trigger SMS delivery."""
